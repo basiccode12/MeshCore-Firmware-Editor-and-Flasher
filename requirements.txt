@@ -1,0 +1,11 @@
+# Python dependencies for MeshCore BLE Flasher
+# Install with: pip install -r requirements.txt
+
+# Note: Tkinter is usually included with Python, but may need separate installation on some systems
+# The installation scripts (install.sh / install.bat) will automatically install:
+# - PlatformIO (via pip install platformio)
+# - Git (via system package manager)
+
+# Optional: Install PlatformIO manually
+# platformio
+
