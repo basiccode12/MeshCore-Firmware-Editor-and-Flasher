@@ -1,8 +1,8 @@
 @echo off
-REM Installation script for MeshCore BLE Flasher (Windows)
+REM Installation script for Meshcore Firmware Editor and Flasher (Windows)
 
 echo ==========================================
-echo MeshCore BLE Flasher - Installation
+echo Meshcore Firmware Editor and Flasher - Installation
 echo ==========================================
 echo.
 
@@ -66,7 +66,7 @@ if %errorlevel% equ 0 (
 
 REM Install the package
 echo.
-echo Installing MeshCore BLE Flasher...
+echo Installing Meshcore Firmware Editor and Flasher...
 %PIP_CMD% install -e . --user
 
 if %errorlevel% equ 0 (
@@ -76,10 +76,10 @@ if %errorlevel% equ 0 (
     echo ==========================================
     echo.
     echo You can now run the application with:
-    echo   meshcore-ble-flasher
+    echo   meshcore-firmware-editor
     echo.
     echo Or directly with:
-    echo   %PYTHON_CMD% ble_flasher.py
+    echo   %PYTHON_CMD% meshcore_flasher.py
     echo.
 ) else (
     echo [ERROR] Installation failed!
@@ -174,10 +174,10 @@ echo Installation completed!
 echo ==========================================
 echo.
 echo You can now run the application with:
-echo   meshcore-ble-flasher
+echo   meshcore-firmware-editor
 echo.
 echo Or directly with:
-echo   %PYTHON_CMD% ble_flasher.py
+echo   %PYTHON_CMD% meshcore_flasher.py
 echo.
 pause
 

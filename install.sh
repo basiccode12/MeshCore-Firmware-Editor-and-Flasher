@@ -1,10 +1,10 @@
 #!/bin/bash
-# Installation script for MeshCore BLE Flasher (Linux/macOS)
+# Installation script for Meshcore Firmware Editor and Flasher (Linux/macOS)
 
 # Don't use set -e here, as we want to continue even if optional dependencies fail
 
 echo "=========================================="
-echo "MeshCore BLE Flasher - Installation"
+echo "Meshcore Firmware Editor and Flasher - Installation"
 echo "=========================================="
 echo ""
 
@@ -95,7 +95,7 @@ fi
 
 # Install the package
 echo ""
-echo "Installing MeshCore BLE Flasher..."
+echo "Installing Meshcore Firmware Editor and Flasher..."
 if ! $PIP_CMD install -e . --user; then
     echo -e "${RED}✗${NC} Installation failed!"
     exit 1
@@ -196,9 +196,9 @@ echo -e "Installation completed!"
 echo -e "==========================================${NC}"
 echo ""
 echo "You can now run the application with:"
-echo "  meshcore-ble-flasher"
+echo "  meshcore-firmware-editor"
 echo ""
 echo "Or directly with:"
-echo "  $PYTHON_CMD ble_flasher.py"
+echo "  $PYTHON_CMD meshcore_flasher.py"
 echo ""
 

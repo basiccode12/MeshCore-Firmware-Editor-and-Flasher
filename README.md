@@ -1,14 +1,70 @@
-# MeshCore BLE Flasher
+# Meshcore Firmware Editor and Flasher
 
-A simple, focused GUI tool for changing BLE names and flashing firmware to MeshCore devices.
+A simple, focused GUI tool for editing and flashing MeshCore firmware.
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
 ## Features
 
-- **Download firmware** from GitHub (latest version)
-- **Browse local firmware** files
-- **Change BLE name** with one click
-- **Compile firmware** for your device
-- **Flash firmware** directly to device
+### Firmware Management
+- **Download firmware from GitHub** - Download firmware directly from the MeshCore repository
+  - Select from available versions (branches and tags)
+  - Filter versions by firmware type (Companion Radio or Repeater Radio)
+  - Automatic version detection and filtering
+- **Browse local firmware files** - Load and edit your own firmware files
+- **Firmware type selection** - Choose between Companion Radio and Repeater Radio firmware
+- **Version selection** - Select specific branches or tags to download
+
+### Code Editing
+- **C++ Source Code Editor** - Full-featured editor for editing main.cpp files
+  - Syntax highlighting support
+  - Find and replace functionality (Ctrl+F)
+  - Auto-loads when firmware is downloaded or browsed
+  - Save with automatic backup creation
+  - Reload from disk
+  - Reset to original content
+  - Real-time change tracking
+
+### Configuration Management
+- **PlatformIO.ini Editor** - Built-in editor for PlatformIO configuration
+  - Edit build settings, environments, and options
+  - Find and replace functionality (Ctrl+F)
+  - Save with automatic backup creation
+  - Reload from disk
+  - Reset to original content
+  - Real-time change tracking
+
+### Device Management
+- **Automatic device detection** - Device list auto-populates from platformio.ini files
+- **Device filtering** - Shows only devices matching selected firmware type
+- **Device selection** - Easy dropdown selection of target device
+
+### BLE Name Customization
+- **BLE name editing** - Change BLE device name with one click
+- **Automatic application** - BLE name changes are automatically applied before compilation
+- **Companion Radio support** - Full BLE name support for Companion Radio firmware
+- **Repeater Radio support** - Attempts to apply BLE names to Repeater Radio firmware
+
+### Build & Flash
+- **Compile firmware** - Build firmware for your selected device using PlatformIO
+- **Flash firmware** - Upload compiled firmware directly to your device via USB
+- **Real-time progress** - Watch compilation and flashing progress in the log window
+- **Automatic project setup** - Automatically clones and sets up the MeshCore repository
+
+### User Interface
+- **Tabbed interface** - Organized into Firmware, C++ Editor, and Settings tabs
+- **Modern GUI** - Clean, intuitive interface built with Tkinter
+- **Real-time logging** - Comprehensive log output for all operations
+- **Status indicators** - Visual feedback for file status and changes
+- **Keyboard shortcuts** - Ctrl+F for find functionality in editors
+
+### Installation & Setup
+- **Automatic dependency installation** - Installs Python, pip, Tkinter, PlatformIO, and Git automatically
+- **Cross-platform support** - Works on Linux, macOS, and Windows
+- **Simple installation** - One-command installation scripts for all platforms
+- **No external dependencies** - Uses only Python standard library (except PlatformIO and Git for firmware operations)
 
 ## Requirements
 
@@ -42,7 +98,7 @@ A simple, focused GUI tool for changing BLE names and flashing firmware to MeshC
 
 3. **Run the application:**
    ```bash
-   meshcore-ble-flasher
+   meshcore-firmware-editor
    ```
    
    Or use the launcher script:
@@ -52,7 +108,7 @@ A simple, focused GUI tool for changing BLE names and flashing firmware to MeshC
    
    Or directly:
    ```bash
-   python3 ble_flasher.py
+   python3 meshcore_flasher.py
    ```
 
 ### 🪟 Windows
@@ -78,7 +134,7 @@ A simple, focused GUI tool for changing BLE names and flashing firmware to MeshC
 
 3. **Run the application:**
    ```cmd
-   meshcore-ble-flasher
+   meshcore-firmware-editor
    ```
    
    Or double-click `run.bat`, or run:
@@ -88,7 +144,7 @@ A simple, focused GUI tool for changing BLE names and flashing firmware to MeshC
    
    Or directly:
    ```cmd
-   python ble_flasher.py
+   python meshcore_flasher.py
    ```
 
 ### Alternative: Manual Installation
@@ -105,7 +161,7 @@ pip install -e . --user
 
 Then run with:
 ```bash
-meshcore-ble-flasher
+meshcore-firmware-editor
 ```
 
 ## Manual Setup (If Installation Scripts Don't Work)
@@ -135,31 +191,61 @@ meshcore-ble-flasher
 
 ## Usage Guide
 
-Once the application is running:
+Once the application is running, you'll see three main tabs:
+
+### 📦 Firmware Tab
 
 1. **Get Firmware**: 
-   - Click "📥 Download Latest" to get the newest firmware from GitHub
+   - Select firmware type: **Companion Radio** or **Repeater Radio**
+   - Select version: Choose from available branches and tags (versions are filtered by firmware type)
+   - Click "📥 Download" to download firmware from GitHub
    - Or click "📂 Browse Local File" to use your own firmware file
+   - The downloaded/browsed file will automatically load into the C++ Editor tab
 
 2. **Set BLE Name** (optional): 
    - Enter your desired BLE name (e.g., "My Radio")
    - The BLE name will be automatically saved before compilation
    - If no BLE name is entered, firmware will compile with default settings
+   - Note: BLE name changes work best with Companion Radio firmware
 
 3. **Select Device**: 
    - Choose your device from the dropdown
-   - (Dropdown will be populated automatically on startup)
+   - Device list auto-populates on startup and filters by selected firmware type
+   - Only devices matching your firmware type (Companion/Repeater) are shown
 
-4. **Compile**: 
+4. **Configure PlatformIO** (Optional): 
+   - Click "✏️ Edit platformio.ini" to navigate to the Settings tab
+   - Or manually switch to the Settings tab to edit configuration
+
+5. **Compile**: 
    - Click "🔨 Compile" to build the firmware
    - BLE name changes (if entered) will be applied automatically before compilation
+   - Your platformio.ini and C++ code edits (if made) will be used
    - First compilation takes longer (downloads toolchains)
-   - Watch progress in the log window
+   - Watch progress in the log window at the bottom
 
-5. **Flash**: 
+6. **Flash**: 
    - Connect your device via USB
    - Click "⚡ Flash" to upload firmware
    - Don't disconnect during flashing!
+
+### 📝 Edit C++ Tab
+
+- **Edit source code** - Make direct edits to the main.cpp file
+- **Find functionality** - Press Ctrl+F or click "🔍 Find" to search in the code
+- **Save changes** - Click "💾 Save" to save your edits (backup created automatically)
+- **Reload** - Click "🔄 Reload" to reload the file from disk
+- **Reset** - Click "↩️ Reset to Original" to discard unsaved changes
+- **Auto-load** - File automatically loads when you download or browse firmware
+
+### ⚙️ Settings Tab
+
+- **Edit platformio.ini** - Customize build settings, environments, and PlatformIO options
+- **Find functionality** - Press Ctrl+F or click "🔍 Find" to search in the configuration
+- **Save changes** - Click "💾 Save" to save your edits (backup created automatically)
+- **Reload** - Click "🔄 Reload" to reload the file from disk
+- **Reset** - Click "↩️ Reset to Original" to discard unsaved changes
+- **Auto-load** - Configuration automatically loads when you switch to this tab
 
 ## Troubleshooting
 
@@ -186,14 +272,14 @@ Once the application is running:
 - Try running from terminal to see error messages
 - On Linux, ensure you have a display server running (X11 or Wayland)
 
-## Simplified Design
+## Design Philosophy
 
-This is a streamlined version focused only on:
-- BLE name changes
-- Firmware compilation
-- Device flashing
-
-All other features (channels, messaging, CLI, etc.) have been removed for simplicity.
+This tool is designed to be a comprehensive yet user-friendly solution for MeshCore firmware development:
+- **Focused workflow** - Everything you need for firmware editing and flashing in one place
+- **No external dependencies** - Uses only Python standard library (PlatformIO and Git are auto-installed)
+- **Automatic setup** - Handles repository cloning, project setup, and dependency installation
+- **Intuitive interface** - Tabbed design separates firmware operations, code editing, and configuration
+- **Real-time feedback** - Comprehensive logging and status indicators keep you informed
 
 ## Support
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Setup script for MeshCore BLE Flasher
+Setup script for Meshcore Firmware Editor and Flasher
 """
 
 from setuptools import setup, find_packages
@@ -14,14 +14,15 @@ if os.path.exists(readme_path):
         long_description = f.read()
 
 setup(
-    name='meshcore-ble-flasher',
+    name='meshcore-firmware-editor',
     version='1.0.0',
-    description='A simple GUI tool for changing BLE names and flashing firmware to MeshCore devices',
+    description='A simple GUI tool for editing and flashing MeshCore firmware',
     long_description=long_description,
     long_description_content_type='text/markdown',
     author='MeshCore',
     url='https://github.com/meshcore-dev/MeshCore',
-    py_modules=['ble_flasher'],
+    license='MIT',
+    py_modules=['meshcore_flasher'],
     packages=find_packages(),
     python_requires='>=3.6',
     install_requires=[
@@ -29,7 +30,7 @@ setup(
     ],
     entry_points={
         'console_scripts': [
-            'meshcore-ble-flasher=ble_flasher:main',
+            'meshcore-firmware-editor=meshcore_flasher:main',
         ],
     },
     classifiers=[

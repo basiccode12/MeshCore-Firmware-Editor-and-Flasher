@@ -1,17 +1,17 @@
 @echo off
-REM Simple launcher script for MeshCore BLE Flasher (Windows)
+REM Simple launcher script for Meshcore Firmware Editor and Flasher (Windows)
 
 REM Try to run the installed version first
-where meshcore-ble-flasher >nul 2>&1
+where meshcore-firmware-editor >nul 2>&1
 if %errorlevel% equ 0 (
-    meshcore-ble-flasher
+    meshcore-firmware-editor
 ) else (
     REM Fall back to running directly
-    python ble_flasher.py 2>nul
+    python meshcore_flasher.py 2>nul
     if %errorlevel% neq 0 (
-        py ble_flasher.py 2>nul
+        py meshcore_flasher.py 2>nul
         if %errorlevel% neq 0 (
-            python3 ble_flasher.py
+            python3 meshcore_flasher.py
         )
     )
 )
