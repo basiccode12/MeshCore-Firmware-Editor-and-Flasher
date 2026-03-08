@@ -2,6 +2,8 @@
 
 A simple, focused GUI tool for editing and flashing MeshCore firmware.
 
+**Repository:** https://github.com/basiccode12/Meshcore-Firmware-Editor-and-Flasher
+
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
@@ -78,8 +80,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 1. **Download or clone the repository:**
    ```bash
-   git clone <repository-url>
-   cd "Meshcore BLE Flasher"
+   git clone https://github.com/basiccode12/Meshcore-Firmware-Editor-and-Flasher.git
+   cd "Meshcore-Firmware-Editor-and-Flasher"
    ```
    Or download as ZIP and extract it.
 
@@ -115,7 +117,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 1. **Download or clone the repository:**
    - Download as ZIP and extract, or
-   - Clone with Git: `git clone <repository-url>`
+   - Clone with Git: `git clone https://github.com/basiccode12/Meshcore-Firmware-Editor-and-Flasher.git`
 
 2. **Run the installation script:**
    - Double-click `install.bat`, or

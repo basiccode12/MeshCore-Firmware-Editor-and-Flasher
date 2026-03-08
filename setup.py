@@ -20,7 +20,7 @@ setup(
     long_description=long_description,
     long_description_content_type='text/markdown',
     author='MeshCore',
-    url='https://github.com/meshcore-dev/MeshCore',
+    url='https://github.com/basiccode12/Meshcore-Firmware-Editor-and-Flasher',
     license='MIT',
     py_modules=['meshcore_flasher'],
     packages=find_packages(),

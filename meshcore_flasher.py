@@ -64,6 +64,7 @@ class MeshCoreBLEFlasher:
         self.all_devices = {}  # Store all devices (unfiltered)
         self.available_devices = {}  # Filtered devices based on firmware type
         self.platformio_ini_modified = False
+        self.platformio_ini_loaded_path = None  # Track loaded platformio.ini file path
         self.selected_version = "main"  # Default to main branch
         self.available_versions = []  # Will be populated with branches and tags
         self.firmware_type = "companion_radio"  # Default to companion_radio (maps to examples/companion_radio)
@@ -185,9 +186,6 @@ class MeshCoreBLEFlasher:
         
         ttk.Button(button_frame, text="📂 Browse Local File",
                   command=self.browse_file, width=18).grid(row=0, column=1, padx=(0, 5))
-        
-        ttk.Button(button_frame, text="📁 Load Saved File",
-                  command=self.load_saved_file, width=18).grid(row=0, column=2, padx=(0, 5))
         
         self.file_path_var = tk.StringVar()
         self.file_path_var.set("No file loaded")
@@ -350,12 +348,14 @@ class MeshCoreBLEFlasher:
         
         ttk.Button(button_frame, text="🔍 Find", 
                   command=self.cpp_show_find_bar, width=12).grid(row=0, column=0, padx=5)
+        ttk.Button(button_frame, text="📁 Load File", 
+                  command=self.load_cpp_file_from_disk, width=15).grid(row=0, column=1, padx=5)
         ttk.Button(button_frame, text="🔄 Reload", 
-                  command=self.reload_cpp_file, width=15).grid(row=0, column=1, padx=5)
+                  command=self.reload_cpp_file, width=15).grid(row=0, column=2, padx=5)
         ttk.Button(button_frame, text="💾 Save", 
-                  command=self.save_cpp_file, width=15).grid(row=0, column=2, padx=5)
+                  command=self.save_cpp_file, width=15).grid(row=0, column=3, padx=5)
         ttk.Button(button_frame, text="↩️ Reset to Original", 
-                  command=self.reset_cpp_file, width=20).grid(row=0, column=3, padx=5)
+                  command=self.reset_cpp_file, width=20).grid(row=0, column=4, padx=5)
         
         # Track if content was modified
         self.cpp_original_content = None
@@ -454,12 +454,14 @@ class MeshCoreBLEFlasher:
         
         ttk.Button(button_frame, text="🔍 Find", 
                   command=self.show_find_bar, width=12).grid(row=0, column=0, padx=5)
+        ttk.Button(button_frame, text="📁 Load File", 
+                  command=self.load_platformio_ini_from_disk, width=15).grid(row=0, column=1, padx=5)
         ttk.Button(button_frame, text="🔄 Reload", 
-                  command=self.reload_platformio_ini, width=15).grid(row=0, column=1, padx=5)
+                  command=self.reload_platformio_ini, width=15).grid(row=0, column=2, padx=5)
         ttk.Button(button_frame, text="💾 Save", 
-                  command=self.save_platformio_ini, width=15).grid(row=0, column=2, padx=5)
+                  command=self.save_platformio_ini, width=15).grid(row=0, column=3, padx=5)
         ttk.Button(button_frame, text="↩️ Reset to Original", 
-                  command=self.reset_platformio_ini, width=20).grid(row=0, column=3, padx=5)
+                  command=self.reset_platformio_ini, width=20).grid(row=0, column=4, padx=5)
         
         # Track if content was modified
         self.platformio_ini_original_content = None
@@ -614,7 +616,7 @@ class MeshCoreBLEFlasher:
                 # Fetch branches
                 try:
                     req = urllib.request.Request(GITHUB_BRANCHES_URL)
-                    req.add_header('User-Agent', 'MeshCore-BLE-Flasher')
+                    req.add_header('User-Agent', 'MeshCore-Firmware-Editor-and-Flasher')
                     with urllib.request.urlopen(req, timeout=10) as response:
                         branches = json.loads(response.read().decode())
                         for branch in branches:
@@ -623,7 +625,7 @@ class MeshCoreBLEFlasher:
                             try:
                                 check_url = GITHUB_RAW_URL.format(ref=branch_name, firmware_type=firmware_type)
                                 check_req = urllib.request.Request(check_url, method='HEAD')
-                                check_req.add_header('User-Agent', 'MeshCore-BLE-Flasher')
+                                check_req.add_header('User-Agent', 'MeshCore-Firmware-Editor-and-Flasher')
                                 with urllib.request.urlopen(check_req, timeout=5) as check_resp:
                                     # File exists, include this branch
                                     versions.append(('branch', branch_name, branch_name))
@@ -637,7 +639,7 @@ class MeshCoreBLEFlasher:
                 try:
                     releases_url = f"{GITHUB_API_BASE}/releases"
                     req = urllib.request.Request(releases_url)
-                    req.add_header('User-Agent', 'MeshCore-BLE-Flasher')
+                    req.add_header('User-Agent', 'MeshCore-Firmware-Editor-and-Flasher')
                     with urllib.request.urlopen(req, timeout=10) as response:
                         releases = json.loads(response.read().decode())
                         for release in releases:
@@ -647,7 +649,7 @@ class MeshCoreBLEFlasher:
                                 try:
                                     check_url = GITHUB_RAW_URL.format(ref=tag_name, firmware_type=firmware_type)
                                     check_req = urllib.request.Request(check_url, method='HEAD')
-                                    check_req.add_header('User-Agent', 'MeshCore-BLE-Flasher')
+                                    check_req.add_header('User-Agent', 'MeshCore-Firmware-Editor-and-Flasher')
                                     with urllib.request.urlopen(check_req, timeout=5) as check_resp:
                                         # File exists, include this tag
                                         versions.append(('tag', tag_name, f"{tag_name} (release)"))
@@ -658,7 +660,7 @@ class MeshCoreBLEFlasher:
                     # Fallback to tags endpoint
                     try:
                         req = urllib.request.Request(GITHUB_TAGS_URL)
-                        req.add_header('User-Agent', 'MeshCore-BLE-Flasher')
+                        req.add_header('User-Agent', 'MeshCore-Firmware-Editor-and-Flasher')
                         with urllib.request.urlopen(req, timeout=10) as response:
                             tags = json.loads(response.read().decode())
                             for tag in tags:
@@ -668,7 +670,7 @@ class MeshCoreBLEFlasher:
                                     try:
                                         check_url = GITHUB_RAW_URL.format(ref=tag_name, firmware_type=firmware_type)
                                         check_req = urllib.request.Request(check_url, method='HEAD')
-                                        check_req.add_header('User-Agent', 'MeshCore-BLE-Flasher')
+                                        check_req.add_header('User-Agent', 'MeshCore-Firmware-Editor-and-Flasher')
                                         with urllib.request.urlopen(check_req, timeout=5) as check_resp:
                                             versions.append(('tag', tag_name, f"{tag_name} (tag)"))
                                     except:
@@ -832,7 +834,7 @@ class MeshCoreBLEFlasher:
             
             try:
                 req = urllib.request.Request(branch_url)
-                req.add_header('User-Agent', 'MeshCore-BLE-Flasher')
+                req.add_header('User-Agent', 'MeshCore-Firmware-Editor-and-Flasher')
                 with urllib.request.urlopen(req, timeout=10) as response:
                     branch_info = json.loads(response.read().decode())
                     commit_hash = branch_info['commit']['sha']
@@ -843,7 +845,7 @@ class MeshCoreBLEFlasher:
                 try:
                     tag_url = f"{GITHUB_API_BASE}/git/refs/tags/{version_ref}"
                     req = urllib.request.Request(tag_url)
-                    req.add_header('User-Agent', 'MeshCore-BLE-Flasher')
+                    req.add_header('User-Agent', 'MeshCore-Firmware-Editor-and-Flasher')
                     with urllib.request.urlopen(req, timeout=10) as response:
                         tag_info = json.loads(response.read().decode())
                         # Handle both lightweight and annotated tags
@@ -854,7 +856,7 @@ class MeshCoreBLEFlasher:
                                 # Get the commit from the tag object
                                 tag_obj_url = tag_info['object']['url']
                                 tag_obj_req = urllib.request.Request(tag_obj_url)
-                                tag_obj_req.add_header('User-Agent', 'MeshCore-BLE-Flasher')
+                                tag_obj_req.add_header('User-Agent', 'MeshCore-Firmware-Editor-and-Flasher')
                                 with urllib.request.urlopen(tag_obj_req, timeout=10) as tag_obj_resp:
                                     tag_obj = json.loads(tag_obj_resp.read().decode())
                                     commit_hash = tag_obj.get('object', {}).get('sha', version_ref)
@@ -875,7 +877,7 @@ class MeshCoreBLEFlasher:
             self.log(f"URL: {raw_url}")
             
             req = urllib.request.Request(raw_url)
-            req.add_header('User-Agent', 'MeshCore-BLE-Flasher')
+            req.add_header('User-Agent', 'MeshCore-Firmware-Editor-and-Flasher')
             
             try:
                 with urllib.request.urlopen(req, timeout=15) as response:
@@ -940,24 +942,6 @@ class MeshCoreBLEFlasher:
         
         if filename:
             self._load_file(filename, is_downloaded=False)
-    
-    def load_saved_file(self):
-        """Load a previously saved firmware file"""
-        # Get the current directory (where downloaded files are saved)
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        
-        # Look for saved files in current directory
-        filename = filedialog.askopenfilename(
-            title="Load Saved Firmware File",
-            filetypes=[
-                ("C++ files", "*.cpp"),
-                ("All files", "*.*")
-            ],
-            initialdir=current_dir
-        )
-        
-        if filename:
-            self._load_file(filename, is_downloaded=True)
     
     def _load_file(self, filename, is_downloaded=False):
         """Internal method to load a file"""
@@ -1511,10 +1495,12 @@ class MeshCoreBLEFlasher:
                 "# Project not loaded yet.\n"
                 "# Please wait for the device list to populate, or compile firmware first.")
             self.platformio_ini_original_content = None
+            self.platformio_ini_loaded_path = None  # Clear loaded path when loading from project
             return
         
         platformio_ini_path = os.path.join(self.project_dir, "platformio.ini")
         self.platformio_ini_path_var.set(platformio_ini_path)
+        self.platformio_ini_loaded_path = None  # Clear loaded path when loading from project
         
         if not os.path.exists(platformio_ini_path):
             self.platformio_ini_editor.delete('1.0', tk.END)
@@ -1537,6 +1523,59 @@ class MeshCoreBLEFlasher:
             messagebox.showerror("Error", f"Failed to load platformio.ini:\n{str(e)}")
             self.platformio_ini_original_content = None
     
+    def load_platformio_ini_from_disk(self):
+        """Load a platformio.ini file from disk into the editor"""
+        # Get the current directory (where downloaded files are saved)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Look for saved files in current directory
+        filename = filedialog.askopenfilename(
+            title="Load platformio.ini File",
+            filetypes=[
+                ("INI files", "*.ini"),
+                ("All files", "*.*")
+            ],
+            initialdir=current_dir
+        )
+        
+        if not filename:
+            return
+        
+        # Check for unsaved changes
+        if self.platformio_ini_modified:
+            response = messagebox.askyesno(
+                "Unsaved Changes",
+                "You have unsaved changes. Loading a new file will discard them.\n\n"
+                "Continue?",
+                icon='warning'
+            )
+            if not response:
+                return
+        
+        try:
+            # Load the file
+            with open(filename, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Track the loaded file path
+            self.platformio_ini_loaded_path = filename
+            
+            # Load into editor
+            self.platformio_ini_editor.delete('1.0', tk.END)
+            self.platformio_ini_editor.insert('1.0', content)
+            self.platformio_ini_editor.mark_set(tk.INSERT, '1.0')
+            self.platformio_ini_original_content = content
+            self.platformio_ini_modified = False
+            
+            # Update UI
+            self.platformio_ini_path_var.set(filename)
+            self.platformio_ini_status_var.set("✓ Loaded from disk")
+            self.log(f"✓ platformio.ini loaded: {os.path.basename(filename)}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load platformio.ini file:\n{str(e)}")
+            self.log(f"✗ Error loading platformio.ini file: {str(e)}")
+    
     def reload_platformio_ini(self):
         """Reload platformio.ini from disk"""
         if self.platformio_ini_modified:
@@ -1549,16 +1588,35 @@ class MeshCoreBLEFlasher:
             if not response:
                 return
         
-        self.load_platformio_ini()
-        self.log("✓ platformio.ini reloaded from disk")
+        # If a file was loaded from disk, reload that; otherwise reload from project
+        if self.platformio_ini_loaded_path and os.path.exists(self.platformio_ini_loaded_path):
+            try:
+                with open(self.platformio_ini_loaded_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                self.platformio_ini_editor.delete('1.0', tk.END)
+                self.platformio_ini_editor.insert('1.0', content)
+                self.platformio_ini_editor.mark_set(tk.INSERT, '1.0')
+                self.platformio_ini_original_content = content
+                self.platformio_ini_modified = False
+                self.platformio_ini_status_var.set("✓ Reloaded")
+                self.log("✓ platformio.ini reloaded from disk")
+            except Exception as e:
+                messagebox.showerror("Error", f"Failed to reload platformio.ini:\n{str(e)}")
+        else:
+            self.load_platformio_ini()
+            self.log("✓ platformio.ini reloaded from project")
     
     def save_platformio_ini(self):
         """Save platformio.ini to disk"""
-        if not self.project_dir or not os.path.exists(self.project_dir):
-            messagebox.showerror("Error", "Project not loaded. Cannot save platformio.ini.")
+        # Determine save path: use loaded path if available, otherwise use project_dir
+        if self.platformio_ini_loaded_path and os.path.exists(os.path.dirname(self.platformio_ini_loaded_path)):
+            platformio_ini_path = self.platformio_ini_loaded_path
+        elif self.project_dir and os.path.exists(self.project_dir):
+            platformio_ini_path = os.path.join(self.project_dir, "platformio.ini")
+        else:
+            messagebox.showerror("Error", "No file loaded and project not available. Cannot save platformio.ini.")
             return
-        
-        platformio_ini_path = os.path.join(self.project_dir, "platformio.ini")
         
         try:
             new_content = self.platformio_ini_editor.get('1.0', tk.END)
@@ -1788,6 +1846,62 @@ class MeshCoreBLEFlasher:
         except Exception as e:
             messagebox.showerror("Error", f"Failed to load C++ file:\n{str(e)}")
             self.cpp_original_content = None
+    
+    def load_cpp_file_from_disk(self):
+        """Load a C++ file from disk into the editor"""
+        # Get the current directory (where downloaded files are saved)
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        
+        # Look for saved files in current directory
+        filename = filedialog.askopenfilename(
+            title="Load C++ File",
+            filetypes=[
+                ("C++ files", "*.cpp"),
+                ("All files", "*.*")
+            ],
+            initialdir=current_dir
+        )
+        
+        if not filename:
+            return
+        
+        # Check for unsaved changes
+        if self.cpp_modified:
+            response = messagebox.askyesno(
+                "Unsaved Changes",
+                "You have unsaved changes. Loading a new file will discard them.\n\n"
+                "Continue?",
+                icon='warning'
+            )
+            if not response:
+                return
+        
+        try:
+            # Load the file
+            with open(filename, 'r', encoding='utf-8') as f:
+                content = f.read()
+            
+            # Update file path and content for current firmware type
+            self.file_paths[self.firmware_type] = filename
+            self.file_path = filename  # Current pointer
+            self.original_contents[self.firmware_type] = content
+            self.original_content = content  # Current pointer
+            
+            # Load into editor
+            self.cpp_editor.delete('1.0', tk.END)
+            self.cpp_editor.insert('1.0', content)
+            self.cpp_editor.mark_set(tk.INSERT, '1.0')
+            self.cpp_original_content = content
+            self.cpp_modified = False
+            
+            # Update UI
+            self.cpp_editor_path_var.set(filename)
+            self.cpp_editor_status_var.set("✓ Loaded from disk")
+            self.log(f"✓ C++ file loaded: {os.path.basename(filename)}")
+            
+        except Exception as e:
+            messagebox.showerror("Error", f"Failed to load C++ file:\n{str(e)}")
+            self.log(f"✗ Error loading C++ file: {str(e)}")
     
     def reload_cpp_file(self):
         """Reload C++ file from disk"""
