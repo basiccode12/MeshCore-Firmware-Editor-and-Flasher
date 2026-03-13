@@ -55,24 +55,42 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Real-time progress** - Watch compilation and flashing progress in the log window
 - **Automatic project setup** - Automatically clones and sets up the MeshCore repository
 
+### Over-The-Air (OTA) Updates
+- **WiFi OTA Updates** - Update firmware wirelessly over WiFi
+  - Automatic WiFi management - saves current connection, connects to MeshCore-OTA, reconnects after update
+  - Mesh network support - send OTA commands to remote devices via local gateway
+  - Embedded browser support - upload page loads directly in the app (optional tkinterweb)
+  - Automatic browser opening - opens upload page automatically after connecting to WiFi
+  - Device memory - remembers last BLE device and target device for faster workflow
+  - Follows official MeshCore OTA guide - uses `start ota` command per MeshCore documentation
+
 ### User Interface
-- **Tabbed interface** - Organized into Firmware, C++ Editor, and Settings tabs
+- **Tabbed interface** - Organized into Firmware, main.cpp, platformio.ini, and OTA Update tabs
+- **Fullscreen layout** - Application opens maximized for maximum workspace
+- **Vertical log panel** - Logs displayed in a sidebar on the right side of the screen
 - **Modern GUI** - Clean, intuitive interface built with Tkinter
 - **Real-time logging** - Comprehensive log output for all operations
 - **Status indicators** - Visual feedback for file status and changes
 - **Keyboard shortcuts** - Ctrl+F for find functionality in editors
+- **Scrollable tabs** - All tabs support scrolling for different screen resolutions
 
 ### Installation & Setup
 - **Automatic dependency installation** - Installs Python, pip, Tkinter, PlatformIO, and Git automatically
 - **Cross-platform support** - Works on Linux, macOS, and Windows
 - **Simple installation** - One-command installation scripts for all platforms
-- **No external dependencies** - Uses only Python standard library (except PlatformIO and Git for firmware operations)
+- **Minimal dependencies** - Uses Python standard library (PlatformIO and Git for firmware operations)
+- **Optional embedded browser** - Install `tkinterweb` for embedded OTA upload interface: `pip install tkinterweb`
 
 ## Requirements
 
 - **Python 3.6 or higher** (Python 3.8+ recommended)
 - **PlatformIO** (auto-installed, for compilation and flashing)
 - **Git** (auto-installed, for downloading firmware repository)
+- **Optional: tkinterweb** - For embedded browser in OTA tab: `pip install tkinterweb`
+- **For OTA updates**: 
+  - A MeshCore device with BLE (local gateway device)
+  - NetworkManager (Linux) or equivalent WiFi management tools
+  - MeshCore device must support OTA updates (Room Server/Repeater firmware)
 
 ## Quick Installation
 
@@ -193,7 +211,7 @@ meshcore-firmware-editor
 
 ## Usage Guide
 
-Once the application is running, you'll see three main tabs:
+Once the application is running, you'll see four main tabs. The application opens in fullscreen mode with logs displayed in a vertical panel on the right side.
 
 ### 📦 Firmware Tab
 
@@ -216,8 +234,8 @@ Once the application is running, you'll see three main tabs:
    - Only devices matching your firmware type (Companion/Repeater) are shown
 
 4. **Configure PlatformIO** (Optional): 
-   - Click "✏️ Edit platformio.ini" to navigate to the Settings tab
-   - Or manually switch to the Settings tab to edit configuration
+   - Click "platformio.ini" button to navigate to the platformio.ini tab
+   - Or manually switch to the platformio.ini tab to edit configuration
 
 5. **Compile**: 
    - Click "🔨 Compile" to build the firmware
@@ -231,7 +249,7 @@ Once the application is running, you'll see three main tabs:
    - Click "⚡ Flash" to upload firmware
    - Don't disconnect during flashing!
 
-### 📝 Edit C++ Tab
+### main.cpp Tab
 
 - **Edit source code** - Make direct edits to the main.cpp file
 - **Find functionality** - Press Ctrl+F or click "🔍 Find" to search in the code
@@ -240,7 +258,7 @@ Once the application is running, you'll see three main tabs:
 - **Reset** - Click "↩️ Reset to Original" to discard unsaved changes
 - **Auto-load** - File automatically loads when you download or browse firmware
 
-### ⚙️ Settings Tab
+### platformio.ini Tab
 
 - **Edit platformio.ini** - Customize build settings, environments, and PlatformIO options
 - **Find functionality** - Press Ctrl+F or click "🔍 Find" to search in the configuration
@@ -248,6 +266,38 @@ Once the application is running, you'll see three main tabs:
 - **Reload** - Click "🔄 Reload" to reload the file from disk
 - **Reset** - Click "↩️ Reset to Original" to discard unsaved changes
 - **Auto-load** - Configuration automatically loads when you switch to this tab
+
+### 📡 OTA Update Tab
+
+1. **Select Local BLE Device (Gateway)**:
+   - Click "🔍 Scan" to find MeshCore devices, or leave as "Auto-scan"
+   - The app remembers your last selected device and auto-connects if available
+
+2. **Load Contacts**:
+   - Click "🔄 Load Contacts" to fetch contacts from the local device
+   - Select the target device (remote device to update) from the dropdown
+   - The app remembers your last selected target device
+
+3. **Optional: Admin Password**:
+   - Enter admin password if required by your device
+
+4. **Start OTA Update**:
+   - Click "📤 Start OTA Update"
+   - The app will:
+     - Save your current WiFi connection
+     - Connect to local BLE device (gateway)
+     - Send `start ota` command to target device via mesh network
+     - Automatically scan and connect to MeshCore-OTA WiFi
+     - Open the upload page (embedded browser if tkinterweb installed, otherwise external browser)
+     - Monitor OTA completion
+     - Automatically disconnect from MeshCore-OTA and reconnect to your previous WiFi
+
+5. **Upload Firmware**:
+   - Upload your `.bin` firmware file in the browser/embedded view
+   - Wait for the update to complete
+   - WiFi reconnects automatically after completion
+
+**Note**: The firmware file is uploaded through the browser interface at `http://192.168.4.1/update`. The device creates its own WiFi hotspot (MeshCore-OTA) with a fixed IP address (192.168.4.1), which works on all PCs once connected to the hotspot.
 
 ## Troubleshooting
 
@@ -273,6 +323,22 @@ Once the application is running, you'll see three main tabs:
 - Check if it's minimized or on another workspace
 - Try running from terminal to see error messages
 - On Linux, ensure you have a display server running (X11 or Wayland)
+
+### OTA Update Issues
+
+**Cannot connect to MeshCore-OTA WiFi:**
+- Ensure NetworkManager (Linux) or WiFi management tools are available
+- Check that the device has created the hotspot (wait a few seconds after `start ota` command)
+- Try manually connecting to MeshCore-OTA WiFi network
+
+**Embedded browser not working:**
+- Install tkinterweb: `pip install tkinterweb`
+- If tkinterweb is not available, the app will use your default external browser
+
+**OTA upload page doesn't load:**
+- Ensure you're connected to MeshCore-OTA WiFi network
+- Verify the device IP is 192.168.4.1 (standard ESP32 AP IP)
+- Check that the device is in OTA mode (should show MeshCore-OTA network)
 
 ## Design Philosophy
 

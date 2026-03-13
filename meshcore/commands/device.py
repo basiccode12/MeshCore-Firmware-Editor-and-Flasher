@@ -287,3 +287,36 @@ class DeviceCommands(CommandHandlerBase):
         logger.debug("Getting packet statistics")
         # CMD_GET_STATS (56) + STATS_TYPE_PACKETS (2)
         return await self.send(b"\x38\x02", [EventType.STATS_PACKETS, EventType.ERROR])
+    
+    async def wifi_on(self) -> Event:
+        """Turn WiFi on via custom var"""
+        logger.debug("Turning WiFi on")
+        return await self.set_custom_var("wifi", "on")
+    
+    async def wifi_off(self) -> Event:
+        """Turn WiFi off via custom var"""
+        logger.debug("Turning WiFi off")
+        return await self.set_custom_var("wifi", "off")
+    
+    async def get_wifi_ip(self) -> Event:
+        """Get WiFi IP address - returns custom vars which may contain IP"""
+        logger.debug("Getting WiFi IP address")
+        return await self.get_custom_vars()
+    
+    async def wifi_on(self) -> Event:
+        """Turn WiFi on"""
+        logger.debug("Turning WiFi on")
+        # Using custom var or direct command - check firmware docs for exact command
+        # Common approach: custom var "wifi" = "on" or direct command
+        return await self.set_custom_var("wifi", "on")
+    
+    async def wifi_off(self) -> Event:
+        """Turn WiFi off"""
+        logger.debug("Turning WiFi off")
+        return await self.set_custom_var("wifi", "off")
+    
+    async def get_wifi_ip(self) -> Event:
+        """Get WiFi IP address"""
+        logger.debug("Getting WiFi IP address")
+        # Request IP via custom var or device query
+        return await self.get_custom_vars()

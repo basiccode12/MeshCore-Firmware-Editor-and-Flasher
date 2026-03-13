@@ -168,6 +168,23 @@ if %errorlevel% equ 0 (
     )
 )
 
+REM Create desktop shortcut
+echo.
+echo Creating desktop shortcut...
+set "SCRIPT_DIR=%~dp0"
+set "DESKTOP_PATH=%USERPROFILE%\Desktop"
+
+REM Create shortcut using PowerShell (escape quotes properly)
+powershell -NoProfile -Command "$WshShell = New-Object -ComObject WScript.Shell; $Shortcut = $WshShell.CreateShortcut('%DESKTOP_PATH%\MeshCore Firmware Editor.lnk'); $Shortcut.TargetPath = '%SCRIPT_DIR%run.bat'; $Shortcut.WorkingDirectory = '%SCRIPT_DIR:~0,-1%'; $Shortcut.Description = 'MeshCore Firmware Editor and Flasher'; $Shortcut.IconLocation = 'shell32.dll,137'; $Shortcut.Save()" 2>nul
+
+if %errorlevel% equ 0 (
+    echo [OK] Desktop shortcut created: %DESKTOP_PATH%\MeshCore Firmware Editor.lnk
+) else (
+    echo [WARNING] Could not create desktop shortcut automatically
+    echo   You can create it manually by right-clicking run.bat and selecting "Create shortcut"
+    echo   Then move the shortcut to your Desktop
+)
+
 echo.
 echo ==========================================
 echo Installation completed!
@@ -178,6 +195,8 @@ echo   meshcore-firmware-editor
 echo.
 echo Or directly with:
 echo   %PYTHON_CMD% meshcore_flasher.py
+echo.
+echo Or double-click the desktop shortcut!
 echo.
 pause
 

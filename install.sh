@@ -190,6 +190,106 @@ else
     fi
 fi
 
+# Install tkinterweb (for embedded browser in OTA tab)
+echo ""
+echo "Installing tkinterweb (for embedded browser support)..."
+if $PYTHON_CMD -c "import tkinterweb" 2>/dev/null; then
+    echo -e "${GREEN}✓${NC} tkinterweb already installed"
+else
+    echo "Installing tkinterweb via pip..."
+    if $PIP_CMD install tkinterweb --user; then
+        echo -e "${GREEN}✓${NC} tkinterweb installed successfully"
+    else
+        echo -e "${YELLOW}⚠${NC} Failed to install tkinterweb. OTA tab will use external browser."
+        echo "  You can install it manually: $PIP_CMD install tkinterweb"
+    fi
+fi
+
+# Install PyQt5 and QScintilla (for advanced code editor features)
+echo ""
+echo "Installing PyQt5 and QScintilla (optional - for advanced code editor)..."
+if $PYTHON_CMD -c "from PyQt5.Qsci import QsciScintilla" 2>/dev/null; then
+    echo -e "${GREEN}✓${NC} PyQt5 and QScintilla already installed"
+else
+    echo "Installing PyQt5 and QScintilla via pip..."
+    if $PIP_CMD install PyQt5 PyQt5-QScintilla --user; then
+        echo -e "${GREEN}✓${NC} PyQt5 and QScintilla installed successfully"
+        echo "  Advanced code editor features (syntax highlighting, code folding, etc.) are now available"
+    else
+        echo -e "${YELLOW}⚠${NC} Failed to install PyQt5/QScintilla. Basic editor will be used."
+        echo "  You can install it manually: $PIP_CMD install PyQt5 PyQt5-QScintilla"
+        echo "  Note: QScintilla embedding works best on Windows. Linux/macOS support is limited."
+    fi
+fi
+
+# Create desktop shortcut
+echo ""
+echo "Creating desktop shortcut..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [[ "$OSTYPE" == "linux-gnu"* ]]; then
+    # Linux: Create .desktop file
+    DESKTOP_FILE="$HOME/Desktop/meshcore-firmware-editor.desktop"
+    
+    # Try alternative desktop locations if ~/Desktop doesn't exist
+    if [ ! -d "$HOME/Desktop" ]; then
+        if [ -d "$HOME/desktop" ]; then
+            DESKTOP_FILE="$HOME/desktop/meshcore-firmware-editor.desktop"
+        elif [ -d "$HOME/.local/share/applications" ]; then
+            DESKTOP_FILE="$HOME/.local/share/applications/meshcore-firmware-editor.desktop"
+        else
+            # Create Desktop directory if it doesn't exist
+            mkdir -p "$HOME/Desktop" 2>/dev/null || true
+        fi
+    fi
+    
+    cat > "$DESKTOP_FILE" << EOF
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=MeshCore Firmware Editor
+Comment=Edit and flash MeshCore firmware
+Exec=$SCRIPT_DIR/run.sh
+Icon=applications-development
+Terminal=false
+Categories=Development;Electronics;
+Path=$SCRIPT_DIR
+EOF
+    
+    chmod +x "$DESKTOP_FILE"
+    chmod +x "$SCRIPT_DIR/run.sh"
+    
+    # Try to make it executable/trusted (some desktop environments require this)
+    if command_exists gio; then
+        gio set "$DESKTOP_FILE" metadata::trusted true 2>/dev/null || true
+    fi
+    
+    if [ -f "$DESKTOP_FILE" ]; then
+        echo -e "${GREEN}✓${NC} Desktop shortcut created: $DESKTOP_FILE"
+    else
+        echo -e "${YELLOW}⚠${NC} Could not create desktop shortcut"
+    fi
+    
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+    # macOS: Create .command file (simpler than .app bundle)
+    DESKTOP_FILE="$HOME/Desktop/MeshCore Firmware Editor.command"
+    
+    cat > "$DESKTOP_FILE" << EOF
+#!/bin/bash
+cd "$SCRIPT_DIR"
+exec ./run.sh
+EOF
+    
+    chmod +x "$DESKTOP_FILE"
+    chmod +x "$SCRIPT_DIR/run.sh"
+    
+    if [ -f "$DESKTOP_FILE" ]; then
+        echo -e "${GREEN}✓${NC} Desktop launcher created: $DESKTOP_FILE"
+    else
+        echo -e "${YELLOW}⚠${NC} Could not create desktop launcher"
+    fi
+fi
+
 echo ""
 echo -e "${GREEN}=========================================="
 echo -e "Installation completed!"
@@ -201,4 +301,8 @@ echo ""
 echo "Or directly with:"
 echo "  $PYTHON_CMD meshcore_flasher.py"
 echo ""
+if [ -f "$DESKTOP_FILE" ] 2>/dev/null; then
+    echo "Or double-click the desktop shortcut!"
+    echo ""
+fi
 
