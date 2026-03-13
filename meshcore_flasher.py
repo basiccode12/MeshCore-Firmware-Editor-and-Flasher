@@ -356,11 +356,13 @@ class MeshCoreBLEFlasher:
         # Separate file paths and content for each firmware type
         self.file_paths = {
             "companion_radio": None,
-            "simple_repeater": None
+            "simple_repeater": None,
+            "room_server": None,
         }
         self.original_contents = {
             "companion_radio": None,
-            "simple_repeater": None
+            "simple_repeater": None,
+            "room_server": None,
         }
         # Keep for backward compatibility and current access
         self.file_path = None  # Will point to current firmware type's file
@@ -389,7 +391,7 @@ class MeshCoreBLEFlasher:
         self.ota_bin_file = None
         self.ota_device_ip = None
         self.last_compiled_bin = None  # Store path to last compiled binary
-        self.ota_meshcore = None  # MeshCore connection for WiFi control
+        self.ota_meshcore = None  # MeshCore connection for OTA/contact-loading
         self.ota_contacts_dict = {}  # Map dropdown display name to public_key
         self.ota_contacts_cache = {}  # Cache contacts per BLE device: {ble_address: (contact_list, contact_dict)}
         self.ota_scanned_devices = {}  # Map display name to (name, address) for scanned BLE devices
@@ -397,8 +399,6 @@ class MeshCoreBLEFlasher:
         self.ota_wifi_connected = False  # Track if connected to MeshCore-OTA
         self.last_ble_device = None  # Store last BLE device address
         self.last_target_device = None  # Store last target device ID
-        self.previous_wifi_connection = None  # Store previous WiFi connection before OTA
-        self.ota_wifi_connected = False  # Track if connected to MeshCore-OTA
         
         # Theme and UI settings
         self.dark_mode = False  # Dark mode toggle
@@ -409,7 +409,12 @@ class MeshCoreBLEFlasher:
         
         # OTA history
         self.ota_history = []  # Store OTA update history
-        
+
+        # Serial monitor state
+        self.serial_monitor_process = None
+        self.serial_monitor_running = False
+        self.serial_monitor_after_id = None
+
         self.setup_ui()
         self.check_platformio()
         
@@ -547,12 +552,14 @@ class MeshCoreBLEFlasher:
         self.settings_tab = ttk.Frame(self.notebook, padding="10")
         self.cpp_editor_tab = ttk.Frame(self.notebook, padding="10")
         self.ota_tab = ttk.Frame(self.notebook, padding="10")
+        self.serial_monitor_tab = ttk.Frame(self.notebook, padding="10")
         
         self.notebook.add(self.welcome_tab, text="🏠 Welcome")
         self.notebook.add(self.firmware_tab, text="📦 Firmware")
         self.notebook.add(self.cpp_editor_tab, text="main.cpp")
         self.notebook.add(self.settings_tab, text="platformio.ini")
         self.notebook.add(self.ota_tab, text="📡 OTA Update")
+        self.notebook.add(self.serial_monitor_tab, text="🖥️ Serial Monitor")
         
         # Setup welcome tab
         self.setup_welcome_tab()
@@ -568,6 +575,9 @@ class MeshCoreBLEFlasher:
         
         # Setup OTA tab
         self.setup_ota_tab()
+
+        # Setup Serial Monitor tab
+        self.setup_serial_monitor_tab()
         
         # Load OTA checkbox settings (after OTA tab is set up)
         self.load_ota_checkbox_settings()
@@ -592,20 +602,24 @@ class MeshCoreBLEFlasher:
         # Title
         title_label = ttk.Label(welcome_frame, text="Meshcore Firmware Editor and Flasher",
                                font=('Arial', 18, 'bold'))
-        title_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 20))
-        
+        title_label.grid(row=0, column=0, sticky=tk.W, pady=(0, 5))
+
+        subtitle_label = ttk.Label(welcome_frame,
+            text="An all-in-one GUI tool for editing, compiling, flashing and managing MeshCore firmware.",
+            font=('Arial', 10), foreground='gray')
+        subtitle_label.grid(row=1, column=0, sticky=tk.W, pady=(0, 20))
+
         # Purpose section
         purpose_frame = ttk.LabelFrame(welcome_frame, text="Purpose", padding="15")
-        purpose_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
+        purpose_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
         purpose_frame.columnconfigure(0, weight=1)
         
         purpose_text = (
-            "This application is a comprehensive GUI tool designed to simplify MeshCore firmware development, "
-            "editing, and deployment. It provides an all-in-one solution for managing MeshCore firmware "
-            "projects, from downloading source code to compiling, editing, and flashing firmware to devices.\n\n"
-            "Whether you're developing custom firmware, updating device configurations, or performing "
-            "over-the-air (OTA) updates, this tool streamlines the entire workflow into an intuitive, "
-            "user-friendly interface."
+            "This application gives MeshCore enthusiasts a single, intuitive place to manage firmware — "
+            "from downloading source code and editing key settings, to compiling, flashing, performing "
+            "over-the-air (OTA) updates, and interacting directly with a device via the MeshCore CLI.\n\n"
+            "All UI changes are reflected directly in the underlying source files so you always know "
+            "exactly what the firmware will contain."
         )
         purpose_label = ttk.Label(purpose_frame, text=purpose_text, font=('Arial', 10),
                                   foreground='black', justify=tk.LEFT, wraplength=800)
@@ -613,42 +627,47 @@ class MeshCoreBLEFlasher:
         
         # Key Features section
         features_frame = ttk.LabelFrame(welcome_frame, text="Key Features", padding="15")
-        features_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
+        features_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
         features_frame.columnconfigure(0, weight=1)
         
         features_text = (
             "📦 FIRMWARE MANAGEMENT\n"
-            "   • Download firmware directly from GitHub MeshCore repository\n"
+            "   • Download firmware from GitHub — Companion Radio, Repeater Radio, or Room Server\n"
             "   • Browse and load local firmware files\n"
-            "   • Support for Companion Radio and Repeater Radio firmware types\n"
-            "   • Automatic version detection and filtering\n\n"
+            "   • Automatic version detection and type filtering\n\n"
+            "🔧 BLE NAME CUSTOMISATION\n"
+            "   • Optional custom BLE name overrides the default MeshCore-<node_name> convention\n"
+            "   • Applied immediately to main.cpp and visible in the C++ editor\n"
+            "   • Leave blank and click Apply to revert to the standard naming code\n"
+            "   • ⚠ Custom names may interfere with auto-connect in some MeshCore phone apps\n\n"
             "✏️ CODE EDITING\n"
-            "   • Full-featured C++ editor for main.cpp files\n"
-            "   • Syntax highlighting and find/replace functionality\n"
-            "   • Auto-loads firmware source code\n"
-            "   • Automatic backup creation on save\n\n"
-            "⚙️ CONFIGURATION MANAGEMENT\n"
-            "   • Built-in PlatformIO.ini editor\n"
-            "   • Edit build settings, environments, and options\n"
-            "   • Real-time change tracking\n\n"
+            "   • Full-featured C++ editor for main.cpp (syntax highlighting if QScintilla installed)\n"
+            "   • PlatformIO.ini editor — edit build settings, environments, and targets\n"
+            "   • Find/replace (Ctrl+F), auto-backup on save, reload, reset to original\n\n"
             "🔨 BUILD & FLASH\n"
-            "   • Compile firmware using PlatformIO\n"
-            "   • Flash firmware directly to devices via USB\n"
-            "   • Real-time compilation and flashing progress\n"
-            "   • Automatic project setup and repository cloning\n\n"
-            "📡 OVER-THE-AIR (OTA) UPDATES\n"
-            "   • Wireless firmware updates over WiFi\n"
-            "   • Automatic WiFi management (saves/restores connection)\n"
-            "   • Mesh network support for remote device updates\n"
-            "   • Embedded browser for firmware upload (optional)\n"
-            "   • Contact caching for faster device selection\n"
-            "   • Search functionality for target devices\n\n"
+            "   • Compile firmware using PlatformIO for your selected device\n"
+            "   • Flash via USB — select a specific serial port or use Auto-detect\n"
+            "   • Flash pre-built .bin files directly — no compilation needed\n"
+            "   • 🔄 Refresh Ports to rescan available serial ports at any time\n\n"
+            "📡 OTA UPDATE\n"
+            "   • Wireless firmware updates via the MeshCore OTA workflow\n"
+            "   • BLE scan → load contacts → send 'start ota' → auto-connect to MeshCore-OTA WiFi\n"
+            "   • Embedded browser upload (optional tkinterweb) or external browser\n"
+            "   • Monitors completion and reconnects your previous WiFi automatically\n"
+            "   • Manual BLE and WiFi disconnect — no automatic teardown\n\n"
+            "💻 MESHCORE CLI\n"
+            "   • Connect to a device via BLE or Serial\n"
+            "   • Quick action buttons: Device Info, Battery, Sync Time, Advertise, Stats, Reboot…\n"
+            "   • Send CLI commands or messages to contacts from a dropdown\n"
+            "   • Colour-coded terminal output with live event stream\n\n"
+            "🖥️ SERIAL MONITOR\n"
+            "   • Live device output streamed directly in the app\n"
+            "   • Auto-starts when you switch to the tab\n\n"
             "🎨 USER INTERFACE\n"
-            "   • Fullscreen layout for maximum workspace\n"
-            "   • Vertical log panel for real-time feedback\n"
-            "   • Scrollable tabs for all screen resolutions\n"
-            "   • Device memory (remembers last selections)\n"
-            "   • Modern, intuitive design"
+            "   • BLE and WiFi status dots turn green when connected\n"
+            "   • Fullscreen layout with vertical log panel\n"
+            "   • Device memory — remembers last BLE device, target, and serial port\n"
+            "   • Tabs: Welcome · Firmware · main.cpp · platformio.ini · OTA Update · CLI · Serial Monitor"
         )
         features_label = ttk.Label(features_frame, text=features_text, font=('Arial', 9),
                                   foreground='black', justify=tk.LEFT, wraplength=800)
@@ -656,21 +675,27 @@ class MeshCoreBLEFlasher:
         
         # Workflow section
         workflow_frame = ttk.LabelFrame(welcome_frame, text="Typical Workflow", padding="15")
-        workflow_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
+        workflow_frame.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
         workflow_frame.columnconfigure(0, weight=1)
         
         workflow_text = (
-            "1. 📦 FIRMWARE TAB: Download or browse firmware from GitHub or local files\n"
-            "2. ✏️ MAIN.CPP TAB: Edit the source code as needed\n"
-            "3. ⚙️ PLATFORMIO.INI TAB: Configure build settings if required\n"
-            "4. 🔨 COMPILE: Build the firmware for your target device\n"
-            "5. ⚡ FLASH: Upload firmware to device via USB connection\n\n"
-            "For OTA Updates:\n"
-            "1. 📡 OTA UPDATE TAB: Select local BLE device (gateway) and target device\n"
-            "2. 🔄 Load contacts from the local device\n"
-            "3. 📤 Start OTA Update - the app handles WiFi connection automatically\n"
-            "4. 🌐 Upload firmware via the embedded or external browser\n"
-            "5. ✅ Wait for completion - WiFi reconnects automatically"
+            "Compile & Flash from source:\n"
+            "  1. 📦 Firmware tab  — select type, download or browse, set optional BLE name\n"
+            "  2. ✏️ main.cpp tab  — review or edit source code\n"
+            "  3. ⚙️ platformio.ini — adjust build settings if needed\n"
+            "  4. 🔨 Compile       — build firmware (BLE name applied automatically)\n"
+            "  5. ⚡ Flash         — select serial port and upload to device\n\n"
+            "Flash a pre-built .bin:\n"
+            "  1. 📦 Firmware tab  — click Browse .bin, select your file\n"
+            "  2. ⚡ Flash .bin    — select serial port and flash immediately\n\n"
+            "OTA Update:\n"
+            "  1. 📡 OTA Update tab — scan for and select your local BLE gateway device\n"
+            "  2. Load Contacts     — fetch the device contact list, select the remote target\n"
+            "  3. Start OTA Update  — the app handles BLE, WiFi, upload page, and reconnect\n\n"
+            "Interact with a device:\n"
+            "  1. 💻 CLI tab       — choose BLE or Serial, connect\n"
+            "  2. Use quick buttons or type commands in the input bar\n"
+            "  3. Disconnect when done"
         )
         workflow_label = ttk.Label(workflow_frame, text=workflow_text, font=('Arial', 9),
                                    foreground='black', justify=tk.LEFT, wraplength=800)
@@ -678,15 +703,18 @@ class MeshCoreBLEFlasher:
         
         # Requirements section
         requirements_frame = ttk.LabelFrame(welcome_frame, text="Requirements", padding="15")
-        requirements_frame.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
+        requirements_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
         requirements_frame.columnconfigure(0, weight=1)
         
         requirements_text = (
-            "• Python 3.6 or higher (Python 3.8+ recommended)\n"
-            "• PlatformIO (auto-installed during setup)\n"
-            "• Git (auto-installed during setup)\n"
-            "• Optional: tkinterweb for embedded browser support in OTA tab\n"
-            "• For OTA updates: MeshCore device with BLE and WiFi management tools"
+            "• Python 3.8 or higher\n"
+            "• PlatformIO  (auto-installed — needed for compile/flash)\n"
+            "• Git  (auto-installed — needed to download firmware from GitHub)\n"
+            "• meshcore  — pip install meshcore  (required for OTA and CLI)\n"
+            "• bleak  — pip install bleak  (required for BLE in OTA and CLI)\n"
+            "• Optional: tkinterweb  — pip install tkinterweb  (embedded browser in OTA tab)\n"
+            "• Optional: QScintilla / PyQt5  — pip install QScintilla PyQt5  (syntax highlighting)\n"
+            "• Linux OTA: NetworkManager (nmcli) for automatic WiFi management"
         )
         requirements_label = ttk.Label(requirements_frame, text=requirements_text, font=('Arial', 9),
                                        foreground='black', justify=tk.LEFT, wraplength=800)
@@ -694,15 +722,13 @@ class MeshCoreBLEFlasher:
         
         # Repository section
         repo_frame = ttk.LabelFrame(welcome_frame, text="Repository & License", padding="15")
-        repo_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
+        repo_frame.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
         repo_frame.columnconfigure(0, weight=1)
         
         repo_text = (
             "Repository: https://github.com/basiccode12/Meshcore-Firmware-Editor-and-Flasher\n"
             "License: MIT License\n\n"
-            "This tool is designed to be a comprehensive yet user-friendly solution for MeshCore firmware development. "
-            "It provides a focused workflow with automatic setup, intuitive interface, and real-time feedback to keep you "
-            "informed throughout the development process."
+            "Contributions, bug reports, and feature requests are welcome via GitHub Issues."
         )
         repo_label = ttk.Label(repo_frame, text=repo_text, font=('Arial', 9),
                               foreground='black', justify=tk.LEFT, wraplength=800)
@@ -710,14 +736,14 @@ class MeshCoreBLEFlasher:
         
         # Getting Started section
         getting_started_frame = ttk.LabelFrame(welcome_frame, text="Getting Started", padding="15")
-        getting_started_frame.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
+        getting_started_frame.grid(row=7, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
         getting_started_frame.columnconfigure(0, weight=1)
         
         getting_started_text = (
-            "To get started, navigate to the 📦 Firmware tab to download or browse firmware files. "
-            "The application will guide you through each step of the process. All operations are logged "
-            "in the log panel on the right side of the screen for your reference.\n\n"
-            "For detailed usage instructions, refer to the README.md file in the project repository."
+            "Head to the 📦 Firmware tab to download or load a firmware project — that's all you need "
+            "to get started. All operations are logged in the panel on the right.\n\n"
+            "BLE and WiFi connection dots at the top of the OTA and CLI tabs turn green when connected, "
+            "so you always know the current state at a glance."
         )
         getting_started_label = ttk.Label(getting_started_frame, text=getting_started_text, font=('Arial', 9),
                                          foreground='black', justify=tk.LEFT, wraplength=800)
@@ -774,7 +800,7 @@ class MeshCoreBLEFlasher:
         self.firmware_type_var = tk.StringVar()
         self.firmware_type_var.set("Companion Radio")
         firmware_type_combo = ttk.Combobox(version_frame, textvariable=self.firmware_type_var,
-                                           values=["Companion Radio", "Repeater Radio"], 
+                                           values=["Companion Radio", "Repeater Radio", "Room Server"],
                                            state='readonly', width=18)
         firmware_type_combo.grid(row=0, column=1, sticky=tk.W, padx=(0, 10))
         firmware_type_combo.bind('<<ComboboxSelected>>', self._on_firmware_type_selected)
@@ -810,7 +836,7 @@ class MeshCoreBLEFlasher:
         self.root.after(500, self.refresh_versions)
         
         # Step 2: BLE Name (Left Column)
-        step2_frame = ttk.LabelFrame(firmware_frame, text="2. Set BLE Name", padding="10")
+        step2_frame = ttk.LabelFrame(firmware_frame, text="2. Set BLE Name (Optional)", padding="10")
         step2_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N), padx=(0, 5), pady=(0, 10))
         step2_frame.columnconfigure(1, weight=1)
         
@@ -819,9 +845,18 @@ class MeshCoreBLEFlasher:
         self.ble_name_var = tk.StringVar()
         name_entry = ttk.Entry(step2_frame, textvariable=self.ble_name_var, font=('Arial', 10))
         name_entry.grid(row=0, column=1, sticky=(tk.W, tk.E))
-        
-        ttk.Label(step2_frame, text="(auto-saved before compile)", 
-                 font=('Arial', 8), foreground='gray').grid(row=1, column=0, columnspan=2, sticky=tk.W, pady=(5, 0))
+        name_entry.bind('<Return>', lambda e: self.apply_ble_name_changes())
+
+        ttk.Button(step2_frame, text="✏ Apply to main.cpp",
+                   command=self.apply_ble_name_changes, width=20).grid(
+            row=0, column=2, padx=(8, 0), sticky=tk.W)
+
+        ttk.Label(step2_frame, text="Leave blank to use MeshCore's default naming: MeshCore-<node_name>",
+                 font=('Arial', 8), foreground='gray').grid(row=1, column=0, columnspan=3, sticky=tk.W, pady=(5, 1))
+        ttk.Label(step2_frame, text="If set, overwrites the default — written into main.cpp and reflected in the C++ editor. Also applied automatically on compile.",
+                 font=('Arial', 8), foreground='gray').grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=(0, 2))
+        ttk.Label(step2_frame, text="⚠ Custom names may break auto-connect in MeshCore phone apps (apps scan for 'MeshCore-*').",
+                 font=('Arial', 8), foreground='#b35900').grid(row=3, column=0, columnspan=3, sticky=tk.W, pady=(0, 0))
         
         # Step 3: Device Selection (Right Column)
         step3_frame = ttk.LabelFrame(firmware_frame, text="3. Select Device", padding="10")
@@ -861,10 +896,24 @@ class MeshCoreBLEFlasher:
         step6_frame = ttk.LabelFrame(firmware_frame, text="6. Build & Flash", padding="10")
         step6_frame.grid(row=4, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(0, 10))
         step6_frame.columnconfigure(0, weight=1)
-        
+
+        # Serial port selector row
+        port_frame = ttk.Frame(step6_frame)
+        port_frame.grid(row=0, column=0, sticky=tk.W, pady=(0, 8))
+
+        ttk.Label(port_frame, text="Serial Port:").grid(row=0, column=0, padx=(0, 8), sticky=tk.W)
+        self.serial_port_var = tk.StringVar(value="Auto")
+        self.serial_port_combo = ttk.Combobox(port_frame, textvariable=self.serial_port_var,
+                                              values=["Auto"], state='readonly', width=22)
+        self.serial_port_combo.grid(row=0, column=1, padx=(0, 5))
+        ttk.Button(port_frame, text="🔄 Refresh Ports", command=self.refresh_serial_ports_combo,
+                   width=16).grid(row=0, column=2)
+        ttk.Label(port_frame, text="(Auto = PlatformIO detects)",
+                  font=('Arial', 8), foreground='gray').grid(row=0, column=3, padx=(8, 0))
+
         # Flash mode selection
         flash_mode_frame = ttk.Frame(step6_frame)
-        flash_mode_frame.grid(row=0, column=0, sticky=tk.W, pady=(0, 10))
+        flash_mode_frame.grid(row=1, column=0, sticky=tk.W, pady=(0, 10))
         
         ttk.Label(flash_mode_frame, text="Flash Mode:").grid(row=0, column=0, padx=(0, 10), sticky=tk.W)
         
@@ -880,7 +929,7 @@ class MeshCoreBLEFlasher:
                  font=('Arial', 8), foreground='gray').grid(row=1, column=1, columnspan=2, sticky=tk.W, pady=(2, 0))
         
         button_frame = ttk.Frame(step6_frame)
-        button_frame.grid(row=1, column=0)
+        button_frame.grid(row=2, column=0)
         
         self.compile_btn = ttk.Button(button_frame, text="🔨 Compile",
                                       command=self.compile_firmware, width=15)
@@ -893,92 +942,100 @@ class MeshCoreBLEFlasher:
         self.ota_quick_btn = ttk.Button(button_frame, text="📡 OTA Update",
                                        command=self.go_to_ota_tab, width=15)
         self.ota_quick_btn.grid(row=0, column=2, padx=5)
+
+        # Pre-built binary flash section
+        prebuilt_frame = ttk.LabelFrame(step6_frame, text="Flash Pre-built .bin (no compile needed)", padding="8")
+        prebuilt_frame.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(12, 0))
+        prebuilt_frame.columnconfigure(1, weight=1)
+
+        ttk.Label(prebuilt_frame, text="Binary:").grid(row=0, column=0, padx=(0, 8), sticky=tk.W)
+        self.prebuilt_bin_var = tk.StringVar(value="No file selected")
+        ttk.Label(prebuilt_frame, textvariable=self.prebuilt_bin_var,
+                  foreground='blue', font=('Arial', 9),
+                  wraplength=400).grid(row=0, column=1, sticky=(tk.W, tk.E))
+        ttk.Button(prebuilt_frame, text="📂 Browse .bin",
+                   command=self.browse_prebuilt_bin, width=14).grid(row=0, column=2, padx=(8, 4))
+        self.flash_prebuilt_btn = ttk.Button(prebuilt_frame, text="⚡ Flash .bin",
+                                             command=self.flash_prebuilt_bin, width=13)
+        self.flash_prebuilt_btn.grid(row=0, column=3)
+        ttk.Label(prebuilt_frame,
+                  text="Directly flash any .bin file via the selected serial port (uses esptool).",
+                  font=('Arial', 8), foreground='gray').grid(row=1, column=0, columnspan=4,
+                                                              sticky=tk.W, pady=(4, 0))
+        self.prebuilt_bin_path = None  # actual path stored here
         
         # Status
         self.status_var = tk.StringVar()
         self.status_var.set("Ready")
         ttk.Label(step6_frame, textvariable=self.status_var,
-                 font=('Arial', 9), foreground='gray').grid(row=2, column=0, pady=(5, 0))
+                 font=('Arial', 9), foreground='gray').grid(row=5, column=0, pady=(5, 0))
     
     def setup_cpp_editor_tab(self):
         """Setup the C++ file editor tab"""
-        # Configure the tab itself to expand
-        self.cpp_editor_tab.columnconfigure(0, weight=1)
-        self.cpp_editor_tab.rowconfigure(0, weight=1)
-        
-        # Create scrollable frame for the outer container (buttons and editor)
-        # Note: The editor itself already has scrollbars, so we only need to scroll the outer container
-        scrollable_frame, canvas, scrollbar = self.create_scrollable_frame(self.cpp_editor_tab)
-        cpp_frame = scrollable_frame
-        cpp_frame.columnconfigure(0, weight=1)
-        cpp_frame.rowconfigure(2, weight=1)
-        
-        # Title frame
-        title_frame = ttk.Frame(cpp_frame)
-        title_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        # Direct grid layout — no scrollable-frame wrapper so the editor can fill all space
+        tab = self.cpp_editor_tab
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(2, weight=1)   # editor container row expands
+
+        # Title row
+        title_frame = ttk.Frame(tab)
+        title_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 4))
         title_frame.columnconfigure(0, weight=1)
-        
-        title_label = ttk.Label(title_frame, text="C++ Source Code Editor",
-                               font=('Arial', 14, 'bold'))
-        title_label.grid(row=0, column=0, sticky=tk.W)
-        
-        self.cpp_editor_status_var = tk.StringVar()
-        self.cpp_editor_status_var.set("No file loaded")
+
+        ttk.Label(title_frame, text="C++ Source Code Editor",
+                  font=('Arial', 14, 'bold')).grid(row=0, column=0, sticky=tk.W)
+
+        self.cpp_editor_status_var = tk.StringVar(value="No file loaded")
         ttk.Label(title_frame, textvariable=self.cpp_editor_status_var,
-                 font=('Arial', 9), foreground='gray').grid(row=0, column=1, sticky=tk.E)
-        
+                  font=('Arial', 9), foreground='gray').grid(row=0, column=1, sticky=tk.E)
+
         # Info label
-        info_label = ttk.Label(cpp_frame, 
-                               text="Edit the main.cpp source code. Changes will be saved to the current firmware file.",
-                               font=('Arial', 9), foreground='gray', wraplength=700)
-        info_label.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        # Editor container
-        editor_container = ttk.Frame(cpp_frame)
-        editor_container.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        ttk.Label(tab,
+                  text="Edit the main.cpp source code. Changes will be saved to the current firmware file.",
+                  font=('Arial', 9), foreground='gray').grid(
+            row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 4))
+
+        # Editor container — this row has weight=1 so it stretches
+        editor_container = ttk.Frame(tab)
+        editor_container.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         editor_container.columnconfigure(0, weight=1)
-        editor_container.rowconfigure(2, weight=1)  # Editor frame row
-        
+        editor_container.rowconfigure(2, weight=1)   # editor_frame row
+
         # File path label
-        self.cpp_editor_path_var = tk.StringVar()
-        self.cpp_editor_path_var.set("No file loaded yet")
-        path_label = ttk.Label(editor_container, textvariable=self.cpp_editor_path_var,
-                              font=('Courier', 8), foreground='blue')
-        path_label.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
-        
-        # Find bar (initially hidden)
+        self.cpp_editor_path_var = tk.StringVar(value="No file loaded yet")
+        ttk.Label(editor_container, textvariable=self.cpp_editor_path_var,
+                  font=('Courier', 8), foreground='blue').grid(
+            row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 3))
+
+        # Find bar (hidden by default)
         self.cpp_find_bar = ttk.Frame(editor_container)
-        self.cpp_find_bar.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        self.cpp_find_bar.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 3))
         self.cpp_find_bar.columnconfigure(1, weight=1)
         self.cpp_find_bar_visible = False
-        self.cpp_find_bar.grid_remove()  # Hide by default
-        
+        self.cpp_find_bar.grid_remove()
+
         ttk.Label(self.cpp_find_bar, text="Find:").grid(row=0, column=0, padx=(0, 5))
-        
         self.cpp_find_entry = ttk.Entry(self.cpp_find_bar, width=30)
         self.cpp_find_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 5))
         self.cpp_find_entry.bind('<Return>', lambda e: self.cpp_find_next())
         self.cpp_find_entry.bind('<KeyRelease>', self._on_cpp_find_entry_change)
-        
-        ttk.Button(self.cpp_find_bar, text="🔍 Find Next", 
-                  command=self.cpp_find_next, width=12).grid(row=0, column=2, padx=2)
-        ttk.Button(self.cpp_find_bar, text="⬆️ Find Previous", 
-                  command=self.cpp_find_previous, width=14).grid(row=0, column=3, padx=2)
-        ttk.Button(self.cpp_find_bar, text="✕", 
-                  command=self.cpp_hide_find_bar, width=3).grid(row=0, column=4, padx=(5, 0))
-        
-        self.cpp_find_status_var = tk.StringVar()
-        self.cpp_find_status_var.set("")
+        ttk.Button(self.cpp_find_bar, text="🔍 Find Next",
+                   command=self.cpp_find_next, width=12).grid(row=0, column=2, padx=2)
+        ttk.Button(self.cpp_find_bar, text="⬆️ Find Previous",
+                   command=self.cpp_find_previous, width=14).grid(row=0, column=3, padx=2)
+        ttk.Button(self.cpp_find_bar, text="✕",
+                   command=self.cpp_hide_find_bar, width=3).grid(row=0, column=4, padx=(5, 0))
+        self.cpp_find_status_var = tk.StringVar(value="")
         ttk.Label(self.cpp_find_bar, textvariable=self.cpp_find_status_var,
-                 font=('Arial', 8), foreground='gray').grid(row=1, column=0, columnspan=5, sticky=tk.W, pady=(3, 0))
-        
-        # Text editor with scrollbars - use QScintilla if available
+                  font=('Arial', 8), foreground='gray').grid(
+            row=1, column=0, columnspan=5, sticky=tk.W, pady=(3, 0))
+
+        # Editor frame — fills all remaining vertical space
         editor_frame = ttk.Frame(editor_container)
         editor_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         editor_frame.columnconfigure(0, weight=1)
         editor_frame.rowconfigure(0, weight=1)
-        
-        # Try to use QScintilla, fallback to ScrolledText
+
         try:
             self.cpp_editor = QScintillaWrapper(editor_frame, language='cpp')
             if self.cpp_editor.use_qscintilla:
@@ -991,12 +1048,12 @@ class MeshCoreBLEFlasher:
             self.log(f"⚠ Error initializing QScintilla: {str(e)}")
             self.log("  Falling back to basic ScrolledText editor")
             self.cpp_editor = scrolledtext.ScrolledText(editor_frame, wrap=tk.NONE, font=('Courier', 10))
-        
+
         self.cpp_editor.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Button frame
-        button_frame = ttk.Frame(cpp_frame)
-        button_frame.grid(row=3, column=0, pady=(10, 0))
+
+        # Button row (fixed height, below the editor)
+        button_frame = ttk.Frame(tab)
+        button_frame.grid(row=3, column=0, pady=(6, 0))
         
         ttk.Button(button_frame, text="🔍 Find", 
                   command=self.cpp_show_find_bar, width=12).grid(row=0, column=0, padx=5)
@@ -1028,81 +1085,70 @@ class MeshCoreBLEFlasher:
     
     def setup_settings_tab(self):
         """Setup the settings tab with platformio.ini editor"""
-        # Configure the tab itself to expand
-        self.settings_tab.columnconfigure(0, weight=1)
-        self.settings_tab.rowconfigure(0, weight=1)
-        
-        # Create scrollable frame
-        scrollable_frame, canvas, scrollbar = self.create_scrollable_frame(self.settings_tab)
-        settings_frame = scrollable_frame
-        settings_frame.columnconfigure(0, weight=1)
-        settings_frame.rowconfigure(2, weight=1)  # Editor container row
-        
-        # PlatformIO Configuration Section
-        title_frame = ttk.Frame(settings_frame)
-        title_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
+        # Direct grid layout — no scrollable-frame wrapper so the editor fills all space
+        tab = self.settings_tab
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(2, weight=1)   # editor container row expands
+
+        # Title row
+        title_frame = ttk.Frame(tab)
+        title_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 4))
         title_frame.columnconfigure(1, weight=1)
-        
-        ttk.Label(title_frame, text="PlatformIO Configuration", 
-                 font=('Arial', 12, 'bold')).grid(row=0, column=0, sticky=tk.W)
-        
-        self.platformio_ini_status_var = tk.StringVar()
-        self.platformio_ini_status_var.set("No changes made")
+
+        ttk.Label(title_frame, text="PlatformIO Configuration",
+                  font=('Arial', 14, 'bold')).grid(row=0, column=0, sticky=tk.W)
+
+        self.platformio_ini_status_var = tk.StringVar(value="No changes made")
         ttk.Label(title_frame, textvariable=self.platformio_ini_status_var,
-                 font=('Arial', 9), foreground='gray').grid(row=0, column=1, sticky=tk.E)
-        
+                  font=('Arial', 9), foreground='gray').grid(row=0, column=1, sticky=tk.E)
+
         # Info label
-        info_label = ttk.Label(settings_frame, 
-                               text="Edit the platformio.ini file to customize build settings, environments, and other PlatformIO options.",
-                               font=('Arial', 9), foreground='gray', wraplength=700)
-        info_label.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
-        
-        # Editor container
-        editor_container = ttk.Frame(settings_frame)
-        editor_container.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=(0, 10))
+        ttk.Label(tab,
+                  text="Edit the platformio.ini file to customize build settings, environments, and other PlatformIO options.",
+                  font=('Arial', 9), foreground='gray').grid(
+            row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 4))
+
+        # Editor container — stretches vertically
+        editor_container = ttk.Frame(tab)
+        editor_container.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         editor_container.columnconfigure(0, weight=1)
-        editor_container.rowconfigure(2, weight=1)  # Editor frame row
-        
+        editor_container.rowconfigure(2, weight=1)   # editor_frame row
+
         # File path label
-        self.platformio_ini_path_var = tk.StringVar()
-        self.platformio_ini_path_var.set("Project not loaded yet")
-        path_label = ttk.Label(editor_container, textvariable=self.platformio_ini_path_var,
-                              font=('Courier', 8), foreground='blue')
-        path_label.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
-        
-        # Find bar (initially hidden)
+        self.platformio_ini_path_var = tk.StringVar(value="Project not loaded yet")
+        ttk.Label(editor_container, textvariable=self.platformio_ini_path_var,
+                  font=('Courier', 8), foreground='blue').grid(
+            row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 3))
+
+        # Find bar (hidden by default)
         self.find_bar = ttk.Frame(editor_container)
-        self.find_bar.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 5))
+        self.find_bar.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 3))
         self.find_bar.columnconfigure(1, weight=1)
         self.find_bar_visible = False
-        self.find_bar.grid_remove()  # Hide by default
-        
+        self.find_bar.grid_remove()
+
         ttk.Label(self.find_bar, text="Find:").grid(row=0, column=0, padx=(0, 5))
-        
         self.find_entry = ttk.Entry(self.find_bar, width=30)
         self.find_entry.grid(row=0, column=1, sticky=(tk.W, tk.E), padx=(0, 5))
         self.find_entry.bind('<Return>', lambda e: self.find_next())
         self.find_entry.bind('<KeyRelease>', self._on_find_entry_change)
-        
-        ttk.Button(self.find_bar, text="🔍 Find Next", 
-                  command=self.find_next, width=12).grid(row=0, column=2, padx=2)
-        ttk.Button(self.find_bar, text="⬆️ Find Previous", 
-                  command=self.find_previous, width=14).grid(row=0, column=3, padx=2)
-        ttk.Button(self.find_bar, text="✕", 
-                  command=self.hide_find_bar, width=3).grid(row=0, column=4, padx=(5, 0))
-        
-        self.find_status_var = tk.StringVar()
-        self.find_status_var.set("")
+        ttk.Button(self.find_bar, text="🔍 Find Next",
+                   command=self.find_next, width=12).grid(row=0, column=2, padx=2)
+        ttk.Button(self.find_bar, text="⬆️ Find Previous",
+                   command=self.find_previous, width=14).grid(row=0, column=3, padx=2)
+        ttk.Button(self.find_bar, text="✕",
+                   command=self.hide_find_bar, width=3).grid(row=0, column=4, padx=(5, 0))
+        self.find_status_var = tk.StringVar(value="")
         ttk.Label(self.find_bar, textvariable=self.find_status_var,
-                 font=('Arial', 8), foreground='gray').grid(row=1, column=0, columnspan=5, sticky=tk.W, pady=(3, 0))
-        
-        # Text editor with scrollbars - use QScintilla if available
+                  font=('Arial', 8), foreground='gray').grid(
+            row=1, column=0, columnspan=5, sticky=tk.W, pady=(3, 0))
+
+        # Editor frame — fills all remaining vertical space
         editor_frame = ttk.Frame(editor_container)
         editor_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         editor_frame.columnconfigure(0, weight=1)
         editor_frame.rowconfigure(0, weight=1)
-        
-        # Try to use QScintilla, fallback to ScrolledText
+
         try:
             self.platformio_ini_editor = QScintillaWrapper(editor_frame, language='ini')
             if self.platformio_ini_editor.use_qscintilla:
@@ -1113,13 +1159,14 @@ class MeshCoreBLEFlasher:
             if not hasattr(self, '_qscintilla_error_logged') or not self._qscintilla_error_logged:
                 self.log(f"⚠ Error initializing QScintilla for platformio.ini: {str(e)}")
                 self._qscintilla_error_logged = True
-            self.platformio_ini_editor = scrolledtext.ScrolledText(editor_frame, wrap=tk.NONE, font=('Courier', 10))
-        
+            self.platformio_ini_editor = scrolledtext.ScrolledText(
+                editor_frame, wrap=tk.NONE, font=('Courier', 10))
+
         self.platformio_ini_editor.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
-        
-        # Button frame
-        button_frame = ttk.Frame(settings_frame)
-        button_frame.grid(row=3, column=0, pady=(10, 0))
+
+        # Button row (fixed height, below the editor)
+        button_frame = ttk.Frame(tab)
+        button_frame.grid(row=3, column=0, pady=(6, 0))
         
         ttk.Button(button_frame, text="🔍 Find", 
                   command=self.show_find_bar, width=12).grid(row=0, column=0, padx=5)
@@ -1303,23 +1350,44 @@ class MeshCoreBLEFlasher:
         # Disconnect options
         disconnect_options_frame = ttk.Frame(config_frame)
         disconnect_options_frame.grid(row=6, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=(10, 5))
-        
-        self.ota_keep_ble_connected_var = tk.BooleanVar()
-        self.ota_keep_ble_connected_var.set(False)
-        keep_ble_checkbox = ttk.Checkbutton(disconnect_options_frame, 
-                                           text="Keep BLE connected (do not disconnect at end)",
-                                           variable=self.ota_keep_ble_connected_var)
-        keep_ble_checkbox.grid(row=0, column=0, sticky=tk.W, padx=(0, 20))
-        
+
         self.ota_keep_wifi_connected_var = tk.BooleanVar()
         self.ota_keep_wifi_connected_var.set(False)
         keep_wifi_checkbox = ttk.Checkbutton(disconnect_options_frame,
                                             text="Keep WiFi connected (do not disconnect from MeshCore-OTA)",
                                             variable=self.ota_keep_wifi_connected_var)
-        keep_wifi_checkbox.grid(row=0, column=1, sticky=tk.W)
-        
-        ttk.Label(config_frame, text="Note: These options prevent automatic disconnection at workflow end", 
+        keep_wifi_checkbox.grid(row=0, column=0, sticky=tk.W)
+
+        ttk.Label(config_frame, text="Note: BLE stays connected until you use Manual Disconnect.",
                  font=('Arial', 8), foreground='gray').grid(row=7, column=0, columnspan=2, sticky=tk.W, padx=(0, 10), pady=(0, 5))
+        
+        # Connection Status & Manual Disconnect section
+        conn_status_frame = ttk.LabelFrame(config_frame, text="Connection Status", padding="8")
+        conn_status_frame.grid(row=8, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(5, 5))
+        conn_status_frame.columnconfigure(1, weight=1)
+        conn_status_frame.columnconfigure(3, weight=1)
+        
+        # BLE status + disconnect
+        ttk.Label(conn_status_frame, text="BLE:", font=('Arial', 9, 'bold')).grid(
+            row=0, column=0, sticky=tk.W, padx=(0, 5))
+        self.ble_status_var = tk.StringVar(value="⚫ Not connected")
+        self.ble_status_label = ttk.Label(conn_status_frame, textvariable=self.ble_status_var,
+                                          font=('Arial', 9), foreground='gray')
+        self.ble_status_label.grid(row=0, column=1, sticky=tk.W, padx=(0, 10))
+        self.manual_ble_disconnect_btn = ttk.Button(conn_status_frame, text="🔌 Disconnect BLE",
+                                                    command=self.manual_ble_disconnect, width=18)
+        self.manual_ble_disconnect_btn.grid(row=0, column=2, padx=(10, 5))
+        
+        # WiFi status + disconnect
+        ttk.Label(conn_status_frame, text="WiFi:", font=('Arial', 9, 'bold')).grid(
+            row=1, column=0, sticky=tk.W, padx=(0, 5), pady=(5, 0))
+        self.wifi_status_var = tk.StringVar(value="⚫ Not connected to MeshCore-OTA")
+        self.wifi_status_label = ttk.Label(conn_status_frame, textvariable=self.wifi_status_var,
+                                           font=('Arial', 9), foreground='gray')
+        self.wifi_status_label.grid(row=1, column=1, sticky=tk.W, padx=(0, 10), pady=(5, 0))
+        self.manual_wifi_disconnect_btn = ttk.Button(conn_status_frame, text="📶 Disconnect WiFi",
+                                                     command=self.manual_wifi_disconnect, width=18)
+        self.manual_wifi_disconnect_btn.grid(row=1, column=2, padx=(10, 5), pady=(5, 0))
         
         # Control buttons
         button_frame = ttk.Frame(ota_frame)
@@ -1417,7 +1485,11 @@ class MeshCoreBLEFlasher:
                     if 'last_target_device' in config['OTA']:
                         self.last_target_device = config['OTA']['last_target_device']
         except Exception as e:
-            self.log(f"⚠ Could not load storage settings: {str(e)}")
+            # Called during __init__ before UI is built; use print since log widget may not exist yet
+            if hasattr(self, 'log_text'):
+                self.log(f"⚠ Could not load storage settings: {str(e)}")
+            else:
+                print(f"⚠ Could not load storage settings: {str(e)}")
     
     def load_ota_checkbox_settings(self):
         """Load OTA checkbox settings from config file (called after OTA tab is set up)"""
@@ -1426,9 +1498,6 @@ class MeshCoreBLEFlasher:
             if os.path.exists(self.config_file):
                 config.read(self.config_file)
                 if 'OTA' in config:
-                    if hasattr(self, 'ota_keep_ble_connected_var'):
-                        if 'keep_ble_connected' in config['OTA']:
-                            self.ota_keep_ble_connected_var.set(config['OTA'].getboolean('keep_ble_connected', False))
                     if hasattr(self, 'ota_keep_wifi_connected_var'):
                         if 'keep_wifi_connected' in config['OTA']:
                             self.ota_keep_wifi_connected_var.set(config['OTA'].getboolean('keep_wifi_connected', False))
@@ -1468,8 +1537,6 @@ class MeshCoreBLEFlasher:
                     config.remove_option('OTA', 'last_target_device')
             
             # Save disconnect options
-            if hasattr(self, 'ota_keep_ble_connected_var'):
-                config['OTA']['keep_ble_connected'] = str(self.ota_keep_ble_connected_var.get())
             if hasattr(self, 'ota_keep_wifi_connected_var'):
                 config['OTA']['keep_wifi_connected'] = str(self.ota_keep_wifi_connected_var.get())
             
@@ -1655,8 +1722,9 @@ class MeshCoreBLEFlasher:
             import asyncio
             from bleak import BleakScanner
             from bleak.backends.scanner import BLEDevice, AdvertisementData
-            
-            self.log("Scanning for BLE devices (5 seconds)...")
+
+            scan_duration = 5.0
+            self.log(f"Scanning for BLE devices ({int(scan_duration)} seconds)...")
             
             async def scan():
                 """Scan for all BLE devices, with special handling for MeshCore devices"""
@@ -1695,7 +1763,7 @@ class MeshCoreBLEFlasher:
                 # Use BleakScanner with callback to collect all devices
                 scanner = BleakScanner(detection_callback)
                 await scanner.start()
-                await asyncio.sleep(5.0)  # Scan for 5 seconds
+                await asyncio.sleep(scan_duration)
                 await scanner.stop()
                 
                 # Log found devices after scanning
@@ -1854,7 +1922,7 @@ class MeshCoreBLEFlasher:
             import asyncio
             from meshcore import MeshCore
             from meshcore.ble_cx import BLEConnection
-            
+
             # Normalize address for consistent caching
             normalized_address = self._normalize_ble_address(ble_address)
             # Keep original for connection (BLE library may need original format)
@@ -1862,7 +1930,6 @@ class MeshCoreBLEFlasher:
             
             async def load_contacts():
                 meshcore = None
-                should_disconnect = False
                 
                 # Check if we already have a connection to this device
                 if self.ota_meshcore and hasattr(self.ota_meshcore, 'connection_manager'):
@@ -1922,7 +1989,6 @@ class MeshCoreBLEFlasher:
                             await meshcore.connect()
                             # Verify connection actually worked
                             if meshcore.is_connected:
-                                should_disconnect = True  # Will disconnect after loading contacts
                                 self.log("✓ Connected to local device")
                                 break
                             else:
@@ -1943,7 +2009,6 @@ class MeshCoreBLEFlasher:
                                         meshcore = MeshCore(ble_conn, debug=False)
                                         await meshcore.connect()
                                         if meshcore.is_connected:
-                                            should_disconnect = True
                                             self.log("✓ Connected via auto-scan")
                                             break
                                         else:
@@ -2012,13 +2077,9 @@ class MeshCoreBLEFlasher:
                 else:
                     self.log("⚠ No contacts found on device")
                 
-                # Only disconnect if we created a new connection
-                # If we reused an existing connection, keep it for potential OTA use
-                if should_disconnect:
-                    await meshcore.disconnect()
-                    self.log("✓ Disconnected from local device")
-                else:
-                    self.log("✓ Kept connection active for potential OTA use")
+                # Always keep the connection active — only manual disconnect closes it
+                self.ota_meshcore = meshcore
+                self.log("✓ BLE connection kept active (disconnect manually when done)")
             
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
@@ -2280,6 +2341,7 @@ class MeshCoreBLEFlasher:
                             if connect_result.returncode == 0:
                                 self.log("✓ Connected to MeshCore-OTA WiFi")
                                 self.ota_wifi_connected = True
+                                self._update_wifi_status(True)
                                 return True
                             else:
                                 self.log(f"✗ Failed to connect: {connect_result.stderr}")
@@ -2296,6 +2358,7 @@ class MeshCoreBLEFlasher:
                 if result.returncode == 0:
                     self.log("✓ Connected to MeshCore-OTA WiFi")
                     self.ota_wifi_connected = True
+                    self._update_wifi_status(True)
                     return True
                 else:
                     self.log(f"✗ Failed to connect: {result.stderr}")
@@ -2310,6 +2373,7 @@ class MeshCoreBLEFlasher:
                 if result.returncode == 0:
                     self.log("✓ Connected to MeshCore-OTA WiFi")
                     self.ota_wifi_connected = True
+                    self._update_wifi_status(True)
                     return True
                 else:
                     self.log(f"✗ Failed to connect: {result.stderr}")
@@ -2354,6 +2418,7 @@ class MeshCoreBLEFlasher:
                 )
             
             self.ota_wifi_connected = False
+            self._update_wifi_status(False)
             self.log("✓ Disconnected from MeshCore-OTA WiFi")
             return True
         except Exception as e:
@@ -2668,6 +2733,7 @@ class MeshCoreBLEFlasher:
                 await meshcore.connect()
                 self.log("✓ BLE connected")
                 self.ota_meshcore = meshcore
+                self._update_ble_status(True, ble_address or "")
             except Exception as e:
                 error_msg = str(e)
                 self.log(f"✗ BLE connection failed: {error_msg}")
@@ -2680,6 +2746,7 @@ class MeshCoreBLEFlasher:
                         await meshcore.connect()
                         self.log("✓ BLE connected via auto-scan")
                         self.ota_meshcore = meshcore
+                        self._update_ble_status(True, "auto-scan")
                     except Exception as e2:
                         raise Exception(f"BLE connection failed with address and auto-scan: {error_msg}, {str(e2)}")
                 else:
@@ -2986,18 +3053,14 @@ class MeshCoreBLEFlasher:
                     
                     # Build message based on checkbox states
                     keep_wifi = self.ota_keep_wifi_connected_var.get() if hasattr(self, 'ota_keep_wifi_connected_var') else False
-                    keep_ble = self.ota_keep_ble_connected_var.get() if hasattr(self, 'ota_keep_ble_connected_var') else False
-                    
+
                     actions = []
                     if not keep_wifi:
                         actions.append("• Disconnect from MeshCore-OTA WiFi")
                         actions.append("• Reconnect to your previous WiFi")
                     else:
                         actions.append("• Keep WiFi connected to MeshCore-OTA (as requested)")
-                    if not keep_ble:
-                        actions.append("• Disconnect from BLE device")
-                    else:
-                        actions.append("• Keep BLE connection active (as requested)")
+                    actions.append("• Keep BLE connection active (disconnect manually when done)")
                     actions.append("• Mark the workflow as complete")
                     
                     result = messagebox.askyesno(
@@ -3044,6 +3107,13 @@ class MeshCoreBLEFlasher:
                             self.reconnect_previous_wifi()
                     else:
                         self.disconnect_ota_wifi()
+                    # Show completion dialog when WiFi is disconnected/reconnected
+                    self.root.after(0, lambda: messagebox.showinfo(
+                        "OTA Update Complete",
+                        "OTA update workflow completed!\n\n"
+                        "✓ WiFi has been reconnected to your previous network.\n\n"
+                        "Note: BLE connection will be handled per your checkbox settings."
+                    ))
                 else:
                     self.log("\n⚠ Keeping WiFi connected to MeshCore-OTA (as requested)")
                     
@@ -3201,7 +3271,7 @@ class MeshCoreBLEFlasher:
                                     self.log("\nNote: 'ver' and 'board' commands sent via mesh network.")
                                     self.log("Check device logs or use serial connection for detailed version info.")
                                     
-                                    # Show in message box
+                                    # Show version/completion dialog (keep_wifi=True path)
                                     self.root.after(0, lambda: messagebox.showinfo(
                                         "OTA Update Complete",
                                         f"OTA update workflow completed!\n\n"
@@ -3209,7 +3279,7 @@ class MeshCoreBLEFlasher:
                                         f"Board: {board_name}\n"
                                         f"Version: {fw_version}\n\n"
                                         f"Note: Version commands sent via mesh network.\n"
-                                        f"WiFi has been reconnected."
+                                        f"WiFi kept connected to MeshCore-OTA (as requested)."
                                     ))
                                     
                                     # Don't disconnect here - will disconnect at end of workflow
@@ -3221,7 +3291,7 @@ class MeshCoreBLEFlasher:
                                         "OTA Update Complete",
                                         "OTA update workflow completed!\n\n"
                                         "Could not verify firmware version - device may still be rebooting.\n"
-                                        "WiFi has been reconnected."
+                                        "WiFi kept connected to MeshCore-OTA (as requested)."
                                     ))
                                 except Exception as e:
                                     self.log(f"⚠ Could not verify firmware version: {str(e)}")
@@ -3229,7 +3299,7 @@ class MeshCoreBLEFlasher:
                                         "OTA Update Complete",
                                         "OTA update workflow completed!\n\n"
                                         f"Could not verify firmware version: {str(e)}\n"
-                                        "WiFi has been reconnected."
+                                        "WiFi kept connected to MeshCore-OTA (as requested)."
                                     ))
                                 # Don't disconnect here - will disconnect at end of workflow
                             
@@ -3249,51 +3319,44 @@ class MeshCoreBLEFlasher:
                             self.log("⚠ Could not verify firmware version - BLE connection not available")
                         else:
                             self.log("⚠ Could not verify firmware version - unknown error")
-                    
-                    self.log("\n✓ OTA workflow complete!")
-                    
-                    # Record OTA history
-                    target_device_id = self.ota_target_device_var.get()
-                    ota_entry = {
-                        'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        'target_device': target_device_id if target_device_id else 'Unknown',
-                        'firmware_file': os.path.basename(self.ota_bin_file) if self.ota_bin_file and os.path.exists(self.ota_bin_file) else 'Unknown',
-                        'status': 'Success' if first_result[0] and second_result[0] else 'Completed with warnings'
-                    }
-                    self.ota_history.append(ota_entry)
-                    # Keep only last 50 entries
-                    if len(self.ota_history) > 50:
-                        self.ota_history = self.ota_history[-50:]
-                    self.log(f"📝 OTA history updated: {ota_entry['status']} at {ota_entry['timestamp']}")
-                    
-                    # Disconnect BLE at the very end - after WiFi is disconnected and CLI is no longer needed
-                    # (unless user wants to keep BLE connected)
-                    keep_ble = self.ota_keep_ble_connected_var.get() if hasattr(self, 'ota_keep_ble_connected_var') else False
-                    if not keep_ble:
-                        self.log("\nDisconnecting from BLE device (workflow complete, CLI no longer needed)...")
-                        if self.ota_meshcore:
-                            try:
-                                import asyncio
-                                loop = asyncio.new_event_loop()
-                                asyncio.set_event_loop(loop)
-                                try:
-                                    loop.run_until_complete(self.ota_meshcore.disconnect())
-                                    self.log("✓ Disconnected from BLE device")
-                                finally:
-                                    loop.close()
-                            except Exception as e:
-                                self.log(f"⚠ Error disconnecting from BLE: {str(e)}")
-                            finally:
-                                self.ota_meshcore = None
-                    else:
-                        self.log("\n⚠ Keeping BLE connection active (as requested)")
-                    
-                    self.root.after(0, lambda: self.ota_progress_var.set("OTA complete - WiFi reconnected"))
-                    self.root.after(0, lambda: self.ota_progress_bar.stop())
-                    self.root.after(0, lambda: self.ota_update_btn.config(state='normal'))
+                        # Still show a completion dialog even if version check was skipped
+                        self.root.after(0, lambda: messagebox.showinfo(
+                            "OTA Update Complete",
+                            "OTA update workflow completed!\n\n"
+                            "Could not verify firmware version (missing device ID or BLE connection).\n"
+                            "WiFi kept connected to MeshCore-OTA (as requested)."
+                        ))
                 
-                threading.Thread(target=monitor_thread, daemon=True).start()
-            
+                # --- Completion steps - always run regardless of checkbox state ---
+                self.log("\n✓ OTA workflow complete!")
+                
+                # Record OTA history
+                target_device_id = self.ota_target_device_var.get()
+                ota_entry = {
+                    'timestamp': datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    'target_device': target_device_id if target_device_id else 'Unknown',
+                    'firmware_file': os.path.basename(self.ota_bin_file) if self.ota_bin_file and os.path.exists(self.ota_bin_file) else 'Unknown',
+                    'status': 'Success' if first_result[0] and second_result[0] else 'Completed with warnings'
+                }
+                self.ota_history.append(ota_entry)
+                # Keep only last 50 entries
+                if len(self.ota_history) > 50:
+                    self.ota_history = self.ota_history[-50:]
+                self.log(f"📝 OTA history updated: {ota_entry['status']} at {ota_entry['timestamp']}")
+                
+                # BLE stays connected — user must manually disconnect
+                self.log("\n✓ BLE connection remains active. Use Manual Disconnect when done.")
+                
+                # Update progress UI - message reflects actual WiFi state
+                keep_wifi_final = self.ota_keep_wifi_connected_var.get() if hasattr(self, 'ota_keep_wifi_connected_var') else False
+                progress_msg = "OTA complete - WiFi kept connected" if keep_wifi_final else "OTA complete - WiFi reconnected"
+                self.root.after(0, lambda: self.ota_progress_var.set(progress_msg))
+                self.root.after(0, lambda: self.ota_progress_bar.stop())
+                self.root.after(0, lambda: self.ota_update_btn.config(state='normal'))
+
+            # Start monitor thread AFTER the function is defined (not inside it)
+            threading.Thread(target=monitor_thread, daemon=True).start()
+
             # Show message box with instructions
             self.root.after(0, lambda: messagebox.showinfo(
                 "OTA Mode Started",
@@ -3701,6 +3764,8 @@ class MeshCoreBLEFlasher:
             self.firmware_type = "companion_radio"  # Maps to examples/companion_radio
         elif selected == "Repeater Radio":
             self.firmware_type = "simple_repeater"  # Maps to examples/simple_repeater
+        elif selected == "Room Server":
+            self.firmware_type = "room_server"  # Maps to examples/room_server
         else:
             self.firmware_type = "companion_radio"  # Default
         
@@ -3719,7 +3784,7 @@ class MeshCoreBLEFlasher:
         # Reload C++ editor if we're on that tab
         if hasattr(self, 'cpp_editor'):
             current_tab = self.notebook.index(self.notebook.select())
-            if current_tab == 1:  # C++ Editor tab
+            if current_tab == 2:  # main.cpp (C++ Editor) tab
                 self.load_cpp_file()
         
         # Filter devices based on firmware type
@@ -3735,11 +3800,12 @@ class MeshCoreBLEFlasher:
         
         # Determine what to filter for
         if self.firmware_type == "simple_repeater":
-            # Only show repeater environments
             filter_keyword = "repeater"
             exclude_keyword = "companion"
+        elif self.firmware_type == "room_server":
+            filter_keyword = "room"
+            exclude_keyword = ""
         else:  # companion_radio
-            # Only show companion environments
             filter_keyword = "companion"
             exclude_keyword = "repeater"
         
@@ -3748,7 +3814,7 @@ class MeshCoreBLEFlasher:
         for readable_name, env_name in self.all_devices.items():
             env_lower = env_name.lower()
             # Include if it contains the keyword and doesn't contain the exclude keyword
-            if filter_keyword in env_lower and exclude_keyword not in env_lower:
+            if filter_keyword in env_lower and (not exclude_keyword or exclude_keyword not in env_lower):
                 filtered[readable_name] = env_name
         
         self.available_devices = filtered
@@ -3980,9 +4046,8 @@ class MeshCoreBLEFlasher:
         
         ble_name = self.ble_name_var.get().strip()
         if not ble_name:
-            if not silent:
-                messagebox.showwarning("No Name", "Please enter a BLE name.")
-            return False
+            # Blank field — restore standard MeshCore naming (MeshCore-<node_name>)
+            return self.restore_standard_ble_name(silent=silent)
         
         if not silent:
             self.log("\n" + "="*60)
@@ -4082,6 +4147,10 @@ class MeshCoreBLEFlasher:
             self.original_contents[self.firmware_type] = modified_content
             self.original_content = modified_content  # Current pointer
             
+            # Refresh the C++ editor so the change is immediately visible
+            if hasattr(self, 'cpp_editor'):
+                self.load_cpp_file()
+
             if not silent:
                 self.log(f"  ✓ Applied {changes_made} change(s)")
                 self.log(f"  ✓ Saved as: {filename}")
@@ -4099,7 +4168,81 @@ class MeshCoreBLEFlasher:
             else:
                 self.log(f"  ✗ Error applying BLE name: {str(e)}")
             return False
-    
+
+    def restore_standard_ble_name(self, silent=False):
+        """Restore standard MeshCore BLE naming (the_mesh.getNodePrefs()->node_name)
+        when the BLE name field is blank. Reverses any previously applied custom name."""
+        import re
+        if not self.original_content:
+            return True  # Nothing loaded yet — nothing to restore
+
+        lines = self.original_content.split('\n')
+        modified_lines = []
+        changes_made = 0
+
+        for i, line in enumerate(lines, 1):
+            modified = False
+
+            if 'serial_interface.begin(' in line and 'the_mesh.getNodePrefs()->node_name' not in line:
+                # A quoted custom name may have replaced node_name — restore it
+                new_line = re.sub(
+                    r'(serial_interface\.begin\s*\([^,]*,\s*)"[^"]*"',
+                    r'\1the_mesh.getNodePrefs()->node_name',
+                    line
+                )
+                if new_line != line:
+                    modified_lines.append(new_line)
+                    changes_made += 1
+                    modified = True
+                    if not silent:
+                        self.log(f"  ✓ Restored standard BLE naming on line {i}:")
+                        self.log(f"    Before: {line.strip()}")
+                        self.log(f"    After:  {new_line.strip()}")
+
+            if not modified:
+                modified_lines.append(line)
+
+        if changes_made == 0:
+            if not silent:
+                self.log("  ✓ BLE name already using standard MeshCore-<node_name> — no changes needed.")
+                messagebox.showinfo("Already Standard",
+                    "The firmware is already using MeshCore's default BLE naming\n"
+                    "(MeshCore-<node_name>). No changes were needed.")
+            return True  # Already standard — nothing to do
+
+        try:
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            storage_dir = self.get_storage_path('cpp')
+            filename = f"main_standard_ble_{timestamp}.cpp"
+            save_path = os.path.join(storage_dir, filename)
+
+            modified_content = '\n'.join(modified_lines)
+            with open(save_path, 'w', encoding='utf-8') as f:
+                f.write(modified_content)
+
+            self.file_paths[self.firmware_type] = save_path
+            self.file_path = save_path
+            self.file_path_var.set(f"✓ Standard BLE: {filename}")
+            self.original_contents[self.firmware_type] = modified_content
+            self.original_content = modified_content
+
+            # Refresh C++ editor so the restored code is immediately visible
+            if hasattr(self, 'cpp_editor'):
+                self.load_cpp_file()
+
+            if not silent:
+                self.log(f"  ✓ Restored standard BLE naming ({changes_made} change(s))")
+                messagebox.showinfo("Restored",
+                    "BLE name cleared — firmware restored to MeshCore's default naming\n"
+                    "(MeshCore-<node_name>). The C++ editor has been updated.")
+            else:
+                self.log(f"  ✓ BLE name blank — using standard MeshCore-<node_name> naming")
+
+        except Exception as e:
+            self.log(f"  ✗ Error restoring standard BLE name: {str(e)}")
+
+        return True
+
     def scan_platformio_environments(self, project_root):
         """Scan platformio.ini files for available companion_radio and simple_repeater environments"""
         devices = {}
@@ -4290,6 +4433,9 @@ class MeshCoreBLEFlasher:
                     "Failed to apply BLE name changes. Please check the BLE name and try again."
                 )
                 return
+        else:
+            # BLE name blank — ensure main.cpp uses the standard MeshCore naming convention
+            self.restore_standard_ble_name(silent=True)
         
         # Run compilation in background thread
         self.is_compiling = True
@@ -4554,9 +4700,17 @@ class MeshCoreBLEFlasher:
             self.log("Please don't disconnect the device during flashing!")
             self.log("")
             
+            # Build upload command (optionally with explicit port)
+            upload_cmd = ['pio', 'run', '-e', env_name, '--target', 'upload']
+            selected_port = getattr(self, 'serial_port_var', None)
+            if selected_port:
+                port_val = selected_port.get()
+                if port_val and port_val != "Auto":
+                    upload_cmd += ['--upload-port', port_val]
+
             # Run PlatformIO upload
             process = subprocess.Popen(
-                ['pio', 'run', '-e', env_name, '--target', 'upload'],
+                upload_cmd,
                 cwd=self.project_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -4592,34 +4746,38 @@ class MeshCoreBLEFlasher:
     
     def _on_tab_changed(self, event=None):
         """Handle tab change event"""
+        # Tab indices: 0=Welcome, 1=Firmware, 2=main.cpp, 3=platformio.ini,
+        #              4=OTA Update, 5=CLI, 6=Serial Monitor
         selected_tab = self.notebook.index(self.notebook.select())
-        if selected_tab == 1:  # C++ Editor tab
+        if selected_tab == 2:  # main.cpp (C++ Editor) tab
             self.load_cpp_file()
-        elif selected_tab == 2:  # Settings tab
+        elif selected_tab == 3:  # platformio.ini (Settings) tab
             self.load_platformio_ini()
-        elif selected_tab == 3:  # OTA tab
+        elif selected_tab == 4:  # OTA Update tab
             # Auto-select last compiled binary if available and no file selected
             if not self.ota_bin_file and self.last_compiled_bin and os.path.exists(self.last_compiled_bin):
                 self.ota_bin_file = self.last_compiled_bin
                 self.ota_bin_file_var.set(os.path.basename(self.last_compiled_bin))
+        elif selected_tab == 6:  # Serial Monitor tab
+            self.refresh_serial_ports_combo()
     
     def go_to_cpp_editor_tab(self):
         """Navigate to C++ editor tab"""
-        self.notebook.select(1)  # Switch to C++ editor tab (index 1)
+        self.notebook.select(2)  # Switch to main.cpp tab (index 2)
         # Load C++ file if not already loaded
         if self.cpp_original_content is None:
             self.load_cpp_file()
     
     def go_to_settings_tab(self):
         """Navigate to settings tab"""
-        self.notebook.select(2)  # Switch to settings tab (index 2)
+        self.notebook.select(3)  # Switch to platformio.ini tab (index 3)
         # Load platformio.ini if not already loaded
         if self.platformio_ini_original_content is None:
             self.load_platformio_ini()
     
     def go_to_ota_tab(self):
         """Navigate to OTA tab and auto-select last compiled binary"""
-        self.notebook.select(3)  # Switch to OTA tab (index 3)
+        self.notebook.select(4)  # Switch to OTA Update tab (index 4)
         # Auto-select last compiled binary if available
         if self.last_compiled_bin and os.path.exists(self.last_compiled_bin):
             self.ota_bin_file = self.last_compiled_bin
@@ -4811,7 +4969,7 @@ class MeshCoreBLEFlasher:
                 self.log(f"✓ platformio.ini saved (backup: {os.path.basename(backup_path)})")
                 messagebox.showinfo("Success", "platformio.ini saved successfully!")
                 # Switch back to firmware tab
-                self.notebook.select(0)  # Switch to firmware tab (index 0)
+                self.notebook.select(1)  # Switch to Firmware tab (index 1)
             else:
                 # Silent save - just log briefly
                 pass  # Auto-save is silent
@@ -4888,7 +5046,6 @@ class MeshCoreBLEFlasher:
         self.platformio_ini_editor.tag_config("search_current", background="orange")
         
         # Find all occurrences (case-insensitive)
-        search_lower = search_text.lower()
         while True:
             pos = self.platformio_ini_editor.search(search_text, start_pos, tk.END, nocase=True)
             if not pos:
@@ -5137,7 +5294,7 @@ class MeshCoreBLEFlasher:
                 self.log(f"✓ C++ file saved (backup: {os.path.basename(backup_path)})")
                 messagebox.showinfo("Success", "C++ file saved successfully!")
                 # Switch back to firmware tab
-                self.notebook.select(0)  # Switch to firmware tab (index 0)
+                self.notebook.select(1)  # Switch to Firmware tab (index 1)
             else:
                 # Silent save - just update status
                 pass  # Auto-save is silent
@@ -5306,24 +5463,547 @@ class MeshCoreBLEFlasher:
         # Update status
         self.cpp_find_status_var.set(f"Match {match_index + 1} of {len(self.cpp_find_matches)}")
     
+    # ------------------------------------------------------------------
+    # Manual connection control helpers
+    # ------------------------------------------------------------------
+
+    def _update_ble_status(self, connected: bool, device_name: str = ""):
+        """Update the BLE status label in the OTA tab."""
+        if not hasattr(self, 'ble_status_var'):
+            return
+        if connected:
+            label = f"🟢 Connected: {device_name}" if device_name else "🟢 Connected"
+            colour = '#1a9c1a'  # green
+        else:
+            label = "⚫ Not connected"
+            colour = 'gray'
+        def _apply():
+            self.ble_status_var.set(label)
+            if hasattr(self, 'ble_status_label'):
+                self.ble_status_label.config(foreground=colour)
+        self.root.after(0, _apply)
+
+    def _update_wifi_status(self, connected: bool, ssid: str = "MeshCore-OTA"):
+        """Update the WiFi status label in the OTA tab."""
+        if not hasattr(self, 'wifi_status_var'):
+            return
+        if connected:
+            label = f"🟢 Connected: {ssid}"
+            colour = '#1a9c1a'  # green
+        else:
+            label = "⚫ Not connected to MeshCore-OTA"
+            colour = 'gray'
+        def _apply():
+            self.wifi_status_var.set(label)
+            if hasattr(self, 'wifi_status_label'):
+                self.wifi_status_label.config(foreground=colour)
+        self.root.after(0, _apply)
+
+    def manual_ble_disconnect(self):
+        """Manually disconnect from the active BLE device."""
+        if not self.ota_meshcore:
+            messagebox.showinfo("BLE", "No active BLE connection to disconnect.")
+            return
+
+        response = messagebox.askyesno(
+            "Disconnect BLE",
+            "Disconnect from the current BLE device?\n\n"
+            "You can reconnect at any time by clicking 'Load Contacts'.",
+            icon='question',
+            parent=self.root
+        )
+        if not response:
+            return
+
+        self.ota_progress_var.set("Disconnecting BLE...")
+        self.log("\nManually disconnecting from BLE device...")
+
+        def _do_disconnect():
+            mc = self.ota_meshcore
+            self.ota_meshcore = None
+            self._update_ble_status(False)
+            if mc is not None:
+                try:
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(mc.disconnect())
+                    loop.close()
+                except Exception:
+                    pass
+            self.log("✓ BLE disconnected")
+            self.root.after(0, lambda: self.ota_progress_var.set("BLE disconnected"))
+
+        threading.Thread(target=_do_disconnect, daemon=True).start()
+
+    async def _send_stop_ota_async(self):
+        """Send 'stop ota' to the target device via BLE, reconnecting if necessary."""
+        import asyncio
+        from meshcore import MeshCore
+        from meshcore.ble_cx import BLEConnection
+        from meshcore.events import EventType
+
+        # Resolve the target device ID
+        target_device_selection = self.ota_target_device_var.get().strip()
+        target_device_id = None
+        if hasattr(self, 'ota_contacts_dict') and self.ota_contacts_dict:
+            target_device_id = self.ota_contacts_dict.get(target_device_selection)
+        if not target_device_id:
+            import re
+            match = re.search(r'\(([^)]+)\)', target_device_selection)
+            target_device_id = match.group(1).strip() if match else target_device_selection
+
+        if not target_device_id:
+            self.log("⚠ Cannot send 'stop ota' — no target device ID found")
+            return False
+
+        meshcore_conn = None
+        we_reconnected = False
+
+        try:
+            # Prefer the existing BLE connection
+            if self.ota_meshcore is not None:
+                try:
+                    is_live = self.ota_meshcore.connection_manager.is_connected
+                except Exception:
+                    is_live = False
+
+                if is_live:
+                    self.log("✓ Using existing BLE connection to send 'stop ota'")
+                    meshcore_conn = self.ota_meshcore
+                else:
+                    self.log("⚠ Existing BLE connection lost — will reconnect")
+
+            if meshcore_conn is None:
+                # Reconnect BLE specifically for this command
+                self.log("Reconnecting BLE to send 'stop ota' command...")
+                selected_value = self.ota_ble_device_var.get().strip()
+                ble_address = None
+                if (selected_value and selected_value != "Auto-scan"
+                        and selected_value in self.ota_scanned_devices):
+                    _, ble_address = self.ota_scanned_devices[selected_value]
+
+                ble_conn = BLEConnection(address=ble_address)
+                meshcore_conn = MeshCore(ble_conn, debug=False)
+                await meshcore_conn.connect()
+                we_reconnected = True
+                self.log("✓ BLE reconnected for 'stop ota' command")
+
+            # Send 'stop ota' to the target device via mesh
+            self.log("Sending 'stop ota' command to target device — shutting down WiFi hotspot...")
+            self.root.after(0, lambda: self.ota_progress_var.set("Sending 'stop ota' to device..."))
+            result = await asyncio.wait_for(
+                meshcore_conn.commands.send_cmd(target_device_id, "stop ota"),
+                timeout=15.0
+            )
+
+            if result.type == EventType.MSG_SENT:
+                self.log("✓ 'stop ota' command sent — device will shut down its WiFi hotspot")
+                await asyncio.sleep(2.0)  # Give the device time to process
+                return True
+            else:
+                self.log(f"⚠ 'stop ota' returned unexpected response: {result.type} — continuing anyway")
+                return False
+
+        except asyncio.TimeoutError:
+            self.log("⚠ Timeout sending 'stop ota' — proceeding with WiFi disconnect anyway")
+            return False
+        except Exception as e:
+            self.log(f"⚠ Could not send 'stop ota': {str(e)} — proceeding with WiFi disconnect anyway")
+            return False
+        finally:
+            # Only clean up a connection WE created; leave ota_meshcore untouched
+            if we_reconnected and meshcore_conn:
+                try:
+                    await meshcore_conn.disconnect()
+                    self.log("✓ Temporary BLE connection closed")
+                except Exception:
+                    pass
+
+    def manual_wifi_disconnect(self):
+        """Manually disconnect from MeshCore-OTA WiFi, with optional reconnect to previous network."""
+        if not self.ota_wifi_connected:
+            messagebox.showinfo("WiFi", "Not currently connected to MeshCore-OTA WiFi.")
+            return
+
+        # Step 1: Confirm the disconnect
+        if not messagebox.askyesno(
+            "Disconnect WiFi",
+            "Disconnect from MeshCore-OTA WiFi?",
+            icon='question',
+            parent=self.root
+        ):
+            return
+
+        # Step 2: Ask about reconnecting to previous network (only if one is stored)
+        reconnect = False
+        if self.previous_wifi_connection:
+            reconnect = messagebox.askyesno(
+                "Reconnect to Previous Network",
+                f"Reconnect to your previous WiFi network?\n\n"
+                f"  '{self.previous_wifi_connection}'\n\n"
+                f"• Yes — disconnect from MeshCore-OTA and reconnect to previous network\n"
+                f"• No  — just disconnect from MeshCore-OTA (your OS may reconnect on its own)",
+                icon='question',
+                parent=self.root
+            )
+
+        self.log("\nManually disconnecting from MeshCore-OTA WiFi...")
+        self.ota_progress_var.set("Stopping OTA hotspot on device...")
+
+        # Capture for closure
+        do_reconnect = reconnect
+        prev_network = self.previous_wifi_connection
+
+        def _do_wifi_disconnect():
+            import asyncio
+
+            # Step A: Tell the device to stop the OTA hotspot via BLE before disconnecting WiFi
+            self.log("\n[1/2] Telling device to stop OTA hotspot...")
+            try:
+                loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(loop)
+                try:
+                    loop.run_until_complete(self._send_stop_ota_async())
+                finally:
+                    loop.close()
+            except Exception as e:
+                self.log(f"⚠ Could not stop OTA hotspot on device: {str(e)}")
+
+            # Step B: Disconnect from the WiFi network on this machine
+            self.log("\n[2/2] Disconnecting from MeshCore-OTA WiFi...")
+            self.root.after(0, lambda: self.ota_progress_var.set("Disconnecting WiFi..."))
+            self.disconnect_ota_wifi()
+            self._update_wifi_status(False)
+
+            if do_reconnect and prev_network:
+                self.log(f"Reconnecting to '{prev_network}'...")
+                success = self.reconnect_previous_wifi()
+                if success:
+                    self.root.after(0, lambda: self.ota_progress_var.set(
+                        f"WiFi reconnected to '{prev_network}'"))
+                else:
+                    self.root.after(0, lambda: self.ota_progress_var.set(
+                        "WiFi disconnected (could not reconnect to previous network)"))
+            else:
+                self.root.after(0, lambda: self.ota_progress_var.set("WiFi disconnected"))
+
+        threading.Thread(target=_do_wifi_disconnect, daemon=True).start()
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Serial Monitor Tab
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def setup_serial_monitor_tab(self):
+        """Build the Serial Monitor tab."""
+        self.serial_monitor_tab.columnconfigure(0, weight=1)
+        self.serial_monitor_tab.rowconfigure(2, weight=1)
+
+        # Title row
+        title_frame = ttk.Frame(self.serial_monitor_tab)
+        title_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 8))
+        title_frame.columnconfigure(0, weight=1)
+        ttk.Label(title_frame, text="🖥️ Serial Monitor",
+                  font=('Arial', 14, 'bold')).grid(row=0, column=0, sticky=tk.W)
+        self.sm_status_var = tk.StringVar(value="Stopped")
+        ttk.Label(title_frame, textvariable=self.sm_status_var,
+                  font=('Arial', 9), foreground='gray').grid(row=0, column=1, sticky=tk.E)
+
+        # Controls row
+        ctrl_frame = ttk.Frame(self.serial_monitor_tab)
+        ctrl_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 6))
+
+        ttk.Label(ctrl_frame, text="Port:").grid(row=0, column=0, padx=(0, 4), sticky=tk.W)
+        self.sm_port_var = tk.StringVar(value="Auto")
+        self.sm_port_combo = ttk.Combobox(ctrl_frame, textvariable=self.sm_port_var,
+                                          values=["Auto"], state='readonly', width=20)
+        self.sm_port_combo.grid(row=0, column=1, padx=(0, 8))
+
+        ttk.Label(ctrl_frame, text="Baud:").grid(row=0, column=2, padx=(0, 4), sticky=tk.W)
+        self.sm_baud_var = tk.StringVar(value="115200")
+        sm_baud_combo = ttk.Combobox(ctrl_frame, textvariable=self.sm_baud_var,
+                                     values=["9600", "38400", "57600", "115200", "230400", "921600"],
+                                     state='readonly', width=10)
+        sm_baud_combo.grid(row=0, column=3, padx=(0, 8))
+
+        self.sm_start_btn = ttk.Button(ctrl_frame, text="▶ Start", width=10,
+                                       command=self.start_serial_monitor)
+        self.sm_start_btn.grid(row=0, column=4, padx=(0, 4))
+        self.sm_stop_btn = ttk.Button(ctrl_frame, text="⏹ Stop", width=10,
+                                      command=self.stop_serial_monitor, state='disabled')
+        self.sm_stop_btn.grid(row=0, column=5, padx=(0, 8))
+        ttk.Button(ctrl_frame, text="🗑 Clear", width=10,
+                   command=self.clear_serial_monitor).grid(row=0, column=6)
+
+        # Output area
+        out_frame = ttk.Frame(self.serial_monitor_tab)
+        out_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        out_frame.columnconfigure(0, weight=1)
+        out_frame.rowconfigure(0, weight=1)
+
+        self.sm_output = tk.Text(out_frame, font=('Courier', 9), wrap=tk.WORD,
+                                 bg='#1e1e1e', fg='#d4d4d4', insertbackground='white',
+                                 state='disabled')
+        self.sm_output.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        sm_scrollbar = ttk.Scrollbar(out_frame, orient="vertical", command=self.sm_output.yview)
+        sm_scrollbar.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        self.sm_output['yscrollcommand'] = sm_scrollbar.set
+
+    def refresh_serial_ports_combo(self):
+        """Refresh the serial port lists in both the firmware tab and serial monitor tab."""
+        ports = self._scan_serial_ports()
+        values = ["Auto"] + ports
+
+        # Firmware tab port combo
+        if hasattr(self, 'serial_port_combo'):
+            current = self.serial_port_var.get()
+            self.serial_port_combo['values'] = values
+            if current not in values:
+                self.serial_port_var.set("Auto")
+
+        # Serial monitor tab port combo
+        if hasattr(self, 'sm_port_combo'):
+            current = self.sm_port_var.get()
+            self.sm_port_combo['values'] = values
+            if current not in values:
+                self.sm_port_var.set("Auto")
+
+    def _scan_serial_ports(self):
+        """Return a list of available serial port names."""
+        ports = []
+        try:
+            import serial.tools.list_ports
+            ports = [p.device for p in serial.tools.list_ports.comports()]
+        except ImportError:
+            # Fallback: scan common paths
+            if sys.platform.startswith('linux') or sys.platform == 'darwin':
+                import glob
+                candidates = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*') + glob.glob('/dev/cu.*')
+                ports = sorted(candidates)
+            elif sys.platform == 'win32':
+                import winreg
+                try:
+                    reg = winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE,
+                                         r'HARDWARE\DEVICEMAP\SERIALCOMM')
+                    i = 0
+                    while True:
+                        try:
+                            ports.append(winreg.EnumValue(reg, i)[1])
+                            i += 1
+                        except OSError:
+                            break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        return ports
+
+    def start_serial_monitor(self):
+        """Start the serial monitor using pio device monitor."""
+        if self.serial_monitor_running:
+            return
+
+        port = self.sm_port_var.get()
+        baud = self.sm_baud_var.get()
+
+        cmd = ['pio', 'device', 'monitor', '--baud', baud]
+        if port and port != "Auto":
+            cmd += ['--port', port]
+
+        self._sm_append(f"\n▶ Starting monitor (port={port}, baud={baud})...\n")
+
+        try:
+            self.serial_monitor_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+        except FileNotFoundError:
+            self._sm_append("✗ 'pio' not found. Make sure PlatformIO is installed.\n")
+            return
+
+        self.serial_monitor_running = True
+        self.sm_start_btn.config(state='disabled')
+        self.sm_stop_btn.config(state='normal')
+        self.sm_status_var.set("Running…")
+
+        thread = threading.Thread(target=self._sm_reader_thread, daemon=True)
+        thread.start()
+
+    def _sm_reader_thread(self):
+        """Background thread that reads from the monitor process."""
+        try:
+            for line in self.serial_monitor_process.stdout:
+                if not self.serial_monitor_running:
+                    break
+                self.root.after(0, lambda l=line: self._sm_append(l))
+        except Exception:
+            pass
+        self.root.after(0, self._sm_on_stopped)
+
+    def _sm_on_stopped(self):
+        self.serial_monitor_running = False
+        self.sm_start_btn.config(state='normal')
+        self.sm_stop_btn.config(state='disabled')
+        self.sm_status_var.set("Stopped")
+        self._sm_append("\n⏹ Monitor stopped.\n")
+
+    def stop_serial_monitor(self):
+        """Stop the running serial monitor."""
+        self.serial_monitor_running = False
+        if self.serial_monitor_process:
+            try:
+                self.serial_monitor_process.terminate()
+            except Exception:
+                pass
+            self.serial_monitor_process = None
+
+    def clear_serial_monitor(self):
+        """Clear the serial monitor output area."""
+        self.sm_output.config(state='normal')
+        self.sm_output.delete('1.0', tk.END)
+        self.sm_output.config(state='disabled')
+
+    def _sm_append(self, text):
+        """Append text to the serial monitor output (must run on main thread)."""
+        self.sm_output.config(state='normal')
+        self.sm_output.insert(tk.END, text)
+        self.sm_output.see(tk.END)
+        self.sm_output.config(state='disabled')
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # Pre-built binary flash
+    # ──────────────────────────────────────────────────────────────────────────
+
+    def browse_prebuilt_bin(self):
+        """Let the user pick a pre-compiled .bin file."""
+        path = filedialog.askopenfilename(
+            title="Select Pre-built Firmware Binary",
+            filetypes=[("Binary files", "*.bin"), ("All files", "*.*")]
+        )
+        if not path:
+            return
+        self.prebuilt_bin_path = path
+        self.prebuilt_bin_var.set(os.path.basename(path))
+
+    def flash_prebuilt_bin(self):
+        """Flash the selected .bin file directly via esptool (no compile required)."""
+        if not self.prebuilt_bin_path or not os.path.exists(self.prebuilt_bin_path):
+            messagebox.showwarning("No File", "Please browse and select a .bin file first.")
+            return
+
+        port = self.serial_port_var.get()
+        if port == "Auto":
+            # Try to auto-detect
+            detected = self._scan_serial_ports()
+            if not detected:
+                messagebox.showwarning(
+                    "No Port",
+                    "No serial port detected automatically.\n"
+                    "Please select a port from the Serial Port dropdown."
+                )
+                return
+            port = detected[0]
+            self.log(f"Auto-detected port: {port}")
+
+        confirm = messagebox.askyesno(
+            "Confirm Flash",
+            f"Flash {os.path.basename(self.prebuilt_bin_path)}\n"
+            f"to port {port}?\n\n"
+            "Make sure the device is connected and in flash mode.\n\n"
+            "Continue?",
+            icon='warning'
+        )
+        if not confirm:
+            return
+
+        self.flash_prebuilt_btn.config(state='disabled')
+        self.status_var.set("Flashing pre-built binary…")
+        self.log(f"\n{'='*60}")
+        self.log(f"FLASHING PRE-BUILT BINARY")
+        self.log(f"File : {self.prebuilt_bin_path}")
+        self.log(f"Port : {port}")
+        self.log(f"{'='*60}")
+
+        thread = threading.Thread(
+            target=self._flash_prebuilt_thread,
+            args=(self.prebuilt_bin_path, port),
+            daemon=True
+        )
+        thread.start()
+
+    def _flash_prebuilt_thread(self, bin_path, port):
+        """Background thread: run esptool to flash the binary."""
+        try:
+            # Use esptool via Python module (ships with PlatformIO)
+            cmd = [
+                sys.executable, '-m', 'esptool',
+                '--port', port,
+                '--baud', '921600',
+                'write_flash',
+                '0x10000',   # standard ESP32 app partition offset
+                bin_path
+            ]
+            self.log(f"Command: {' '.join(cmd)}\n")
+
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            for line in process.stdout:
+                self.log(line.rstrip())
+            process.wait()
+
+            if process.returncode == 0:
+                self.log(f"\n✓ FLASHING SUCCESSFUL!")
+                self.root.after(0, lambda: self.status_var.set("Pre-built binary flashed successfully!"))
+                messagebox.showinfo("Success", "Firmware flashed successfully!")
+            else:
+                self.log(f"\n✗ FLASHING FAILED (exit code {process.returncode})")
+                self.log("Tip: Try pressing the BOOT button on the device before flashing.")
+                self.root.after(0, lambda: self.status_var.set("Flash failed – see log"))
+                messagebox.showerror("Flash Failed", "Flashing failed. See log for details.\n\n"
+                                     "Tip: Try pressing the BOOT button on the device.")
+        except Exception as e:
+            self.log(f"\n✗ Error: {e}")
+            self.root.after(0, lambda: self.status_var.set("Flash error"))
+            messagebox.showerror("Error", f"Flash failed:\n{e}")
+        finally:
+            self.root.after(0, lambda: self.flash_prebuilt_btn.config(state='normal'))
+
     def on_closing(self):
         """Handle window closing"""
+        # Save settings before exit (checkbox states, last devices, storage root, etc.)
+        try:
+            self.save_storage_settings()
+        except Exception:
+            pass
+        
+        # Stop serial monitor if running
+        self.stop_serial_monitor()
+
         # Stop OTA server if running
         if self.ota_server:
             self.stop_ota_server()
         
-        # Disconnect MeshCore if connected
-        if self.ota_meshcore:
+        # Disconnect OTA connection if active
+        ota_mc = self.ota_meshcore
+        self.ota_meshcore = None
+        if ota_mc is not None:
             try:
                 import asyncio
                 loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(loop)
-                loop.run_until_complete(self.ota_meshcore.disconnect())
+                loop.run_until_complete(ota_mc.disconnect())
                 loop.close()
-            except:
+            except Exception:
                 pass
-            self.ota_meshcore = None
-        
+
         self.root.destroy()
 
 
