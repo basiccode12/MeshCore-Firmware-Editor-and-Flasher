@@ -59,15 +59,6 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Device memory** - Remembers last BLE device and target device between sessions
 - **Send stop ota** - Gracefully shuts down the device hotspot on manual WiFi disconnect
 
-### 💻 MeshCore CLI
-- **Connect via BLE or Serial** - Toggle between connection types with a radio button
-- **Quick action buttons** - One-click access to common commands:
-  - Device Info, Battery, Sync Time, Advertise, Flood Advert, Load Contacts, Stats, Reboot
-- **Send to contact** - Select a contact and send a CLI command or a text message
-- **Terminal output** - Colour-coded scrollable output (info, ok, error, dim)
-- **Command input bar** - Type and send any raw MeshCore CLI command
-- **Live event stream** - Incoming messages, adverts, and new contacts appear automatically
-
 ### 🖥️ Serial Monitor
 - **Live serial output** - Stream device output directly in the app
 - **Auto-start on tab switch** - Monitoring begins as soon as you open the tab
@@ -76,7 +67,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Clear output** - One-click clear of the terminal window
 
 ### 🎨 User Interface
-- **Tabbed layout** - Organised into: Welcome, Firmware, main.cpp, platformio.ini, OTA Update, CLI, Serial Monitor
+- **Tabbed layout** - Organised into: Welcome · Firmware · main.cpp · platformio.ini · OTA Update · Serial Monitor
 - **Connection status indicators** - BLE and WiFi dots turn **green** when connected, grey when not
 - **Fullscreen layout** - Opens maximised for maximum workspace
 - **Vertical log panel** - Real-time logs on the right side of the screen
@@ -90,8 +81,8 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - **Python 3.8 or higher**
 - **PlatformIO** (auto-installed — required for compile/flash)
 - **Git** (auto-installed — required for downloading firmware)
-- **meshcore** Python library — `pip install meshcore` (required for OTA and CLI)
-- **bleak** — `pip install bleak` (required for BLE in OTA and CLI)
+- **meshcore** Python library — `pip install meshcore` (required for OTA)
+- **bleak** — `pip install bleak` (required for BLE in OTA)
 - **Optional: tkinterweb** — `pip install tkinterweb` (embedded browser in OTA tab)
 - **Optional: QScintilla / PyQt5** — `pip install QScintilla PyQt5` (syntax highlighting in editors)
 - **For OTA on Linux** — NetworkManager (`nmcli`) for automatic WiFi management
@@ -175,15 +166,6 @@ pip install tkinterweb QScintilla PyQt5
    - Monitors completion and reconnects your previous WiFi
 5. Upload your `.bin` file via the browser, then wait for the confirmation dialog
 
-### 💻 CLI Tab
-
-1. Choose **BLE** or **Serial** connection type
-2. For BLE: scan for devices and select one (or use Auto-scan); for Serial: choose a port
-3. Click **Connect**
-4. Use the **quick action buttons** or type commands in the input bar
-5. To send a message or command to a contact, select one from the dropdown and use the Send buttons
-6. Click **Disconnect** when done
-
 ### 🖥️ Serial Monitor Tab
 
 - Switch to the tab — monitoring starts automatically
@@ -196,7 +178,6 @@ pip install tkinterweb QScintilla PyQt5
 
 ### BLE connection fails
 - Ensure `bleak` and `meshcore` are installed: `pip install bleak meshcore`
-- Only one BLE connection can be active at a time — OTA and CLI each use their own independent link
 - On Linux, ensure your user has Bluetooth permissions (add to `bluetooth` group if needed)
 
 ### "Python not found"

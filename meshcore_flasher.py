@@ -393,7 +393,19 @@ class MeshCoreBLEFlasher:
         self.last_compiled_bin = None  # Store path to last compiled binary
         self.ota_meshcore = None  # MeshCore connection for OTA/contact-loading
         self.ota_contacts_dict = {}  # Map dropdown display name to public_key
-        self.ota_contacts_cache = {}  # Cache contacts per BLE device: {ble_address: (contact_list, contact_dict)}
+        self.ota_contacts_cache = {}
+        self._ota_ble_spin_active = False       # BLE scan spinner state
+        self._ota_contacts_spin_active = False  # Contacts load spinner state
+        # Single persistent event loop for all BLE/OTA async operations so that
+        # the MeshCore object created during Load Contacts can be safely reused
+        # by the OTA workflow without "Future attached to a different loop" errors.
+        import asyncio as _asyncio
+        self.ota_event_loop = _asyncio.new_event_loop()
+        _ota_loop_thread = threading.Thread(
+            target=self.ota_event_loop.run_forever,
+            daemon=True, name="ota-event-loop"
+        )
+        _ota_loop_thread.start()  # Cache contacts per BLE device: {ble_address: (contact_list, contact_dict)}
         self.ota_scanned_devices = {}  # Map display name to (name, address) for scanned BLE devices
         self.previous_wifi_connection = None  # Store previous WiFi connection before OTA
         self.ota_wifi_connected = False  # Track if connected to MeshCore-OTA
@@ -616,8 +628,8 @@ class MeshCoreBLEFlasher:
         
         purpose_text = (
             "This application gives MeshCore enthusiasts a single, intuitive place to manage firmware — "
-            "from downloading source code and editing key settings, to compiling, flashing, performing "
-            "over-the-air (OTA) updates, and interacting directly with a device via the MeshCore CLI.\n\n"
+            "from downloading source code and editing key settings, to compiling, flashing, and performing "
+            "over-the-air (OTA) updates.\n\n"
             "All UI changes are reflected directly in the underlying source files so you always know "
             "exactly what the firmware will contain."
         )
@@ -655,11 +667,6 @@ class MeshCoreBLEFlasher:
             "   • Embedded browser upload (optional tkinterweb) or external browser\n"
             "   • Monitors completion and reconnects your previous WiFi automatically\n"
             "   • Manual BLE and WiFi disconnect — no automatic teardown\n\n"
-            "💻 MESHCORE CLI\n"
-            "   • Connect to a device via BLE or Serial\n"
-            "   • Quick action buttons: Device Info, Battery, Sync Time, Advertise, Stats, Reboot…\n"
-            "   • Send CLI commands or messages to contacts from a dropdown\n"
-            "   • Colour-coded terminal output with live event stream\n\n"
             "🖥️ SERIAL MONITOR\n"
             "   • Live device output streamed directly in the app\n"
             "   • Auto-starts when you switch to the tab\n\n"
@@ -667,7 +674,7 @@ class MeshCoreBLEFlasher:
             "   • BLE and WiFi status dots turn green when connected\n"
             "   • Fullscreen layout with vertical log panel\n"
             "   • Device memory — remembers last BLE device, target, and serial port\n"
-            "   • Tabs: Welcome · Firmware · main.cpp · platformio.ini · OTA Update · CLI · Serial Monitor"
+            "   • Tabs: Welcome · Firmware · main.cpp · platformio.ini · OTA Update · Serial Monitor"
         )
         features_label = ttk.Label(features_frame, text=features_text, font=('Arial', 9),
                                   foreground='black', justify=tk.LEFT, wraplength=800)
@@ -691,11 +698,7 @@ class MeshCoreBLEFlasher:
             "OTA Update:\n"
             "  1. 📡 OTA Update tab — scan for and select your local BLE gateway device\n"
             "  2. Load Contacts     — fetch the device contact list, select the remote target\n"
-            "  3. Start OTA Update  — the app handles BLE, WiFi, upload page, and reconnect\n\n"
-            "Interact with a device:\n"
-            "  1. 💻 CLI tab       — choose BLE or Serial, connect\n"
-            "  2. Use quick buttons or type commands in the input bar\n"
-            "  3. Disconnect when done"
+            "  3. Start OTA Update  — the app handles BLE, WiFi, upload page, and reconnect"
         )
         workflow_label = ttk.Label(workflow_frame, text=workflow_text, font=('Arial', 9),
                                    foreground='black', justify=tk.LEFT, wraplength=800)
@@ -710,8 +713,8 @@ class MeshCoreBLEFlasher:
             "• Python 3.8 or higher\n"
             "• PlatformIO  (auto-installed — needed for compile/flash)\n"
             "• Git  (auto-installed — needed to download firmware from GitHub)\n"
-            "• meshcore  — pip install meshcore  (required for OTA and CLI)\n"
-            "• bleak  — pip install bleak  (required for BLE in OTA and CLI)\n"
+            "• meshcore  — pip install meshcore  (required for OTA)\n"
+            "• bleak  — pip install bleak  (required for BLE in OTA)\n"
             "• Optional: tkinterweb  — pip install tkinterweb  (embedded browser in OTA tab)\n"
             "• Optional: QScintilla / PyQt5  — pip install QScintilla PyQt5  (syntax highlighting)\n"
             "• Linux OTA: NetworkManager (nmcli) for automatic WiFi management"
@@ -1298,6 +1301,9 @@ class MeshCoreBLEFlasher:
         
         ttk.Button(config_frame, text="🔍 Scan", 
                   command=self.scan_ble_devices, width=12).grid(row=0, column=2, pady=5)
+        self.ota_ble_spinner_var = tk.StringVar(value="")
+        ttk.Label(config_frame, textvariable=self.ota_ble_spinner_var,
+                  font=('Arial', 12), foreground='#1a6fc4').grid(row=0, column=3, padx=(6, 0))
         ttk.Label(config_frame, text="Click Scan to find MeshCore devices, or leave as 'Auto-scan'", 
                  font=('Arial', 8), foreground='gray').grid(row=1, column=1, sticky=tk.W, padx=(0, 10))
         
@@ -1327,6 +1333,9 @@ class MeshCoreBLEFlasher:
         self.ota_target_device_combo.bind('<<ComboboxSelected>>', self._on_target_device_selected)
         ttk.Button(config_frame, text="🔄 Load Contacts", 
                   command=self.load_contacts_from_device, width=15).grid(row=3, column=2, pady=5)
+        self.ota_contacts_spinner_var = tk.StringVar(value="")
+        ttk.Label(config_frame, textvariable=self.ota_contacts_spinner_var,
+                  font=('Arial', 12), foreground='#1a6fc4').grid(row=3, column=3, padx=(6, 0))
         ttk.Label(config_frame, text="Select from local device's contact list (REQUIRED)", 
                  font=('Arial', 8), foreground='gray').grid(row=4, column=1, sticky=tk.W, padx=(0, 10))
         
@@ -1338,7 +1347,7 @@ class MeshCoreBLEFlasher:
         self.root.after(1000, self._restore_last_devices)  # Delay to let UI initialize
         
         # Admin Password (optional, for device access)
-        ttk.Label(config_frame, text="Admin Password:").grid(row=5, column=0, padx=(0, 10), sticky=tk.W, pady=5)
+        ttk.Label(config_frame, text="Admin Password:").grid(row=4, column=0, padx=(0, 10), sticky=tk.W, pady=5)
         self.ota_admin_password_var = tk.StringVar()
         self.ota_admin_password_var.set("")
         admin_password_entry = ttk.Entry(config_frame, textvariable=self.ota_admin_password_var, 
@@ -1713,6 +1722,7 @@ class MeshCoreBLEFlasher:
         """Scan for BLE devices"""
         self.log("Scanning for BLE devices...")
         self.ota_progress_var.set("Scanning for BLE devices...")
+        self._start_spinner(self.ota_ble_spinner_var, '_ota_ble_spin_active')
         thread = threading.Thread(target=self._scan_ble_devices_thread, daemon=True)
         thread.start()
     
@@ -1826,6 +1836,7 @@ class MeshCoreBLEFlasher:
             
             self.root.after(0, update_ui)
             
+            self.root.after(0, lambda: self._stop_spinner(self.ota_ble_spinner_var, '_ota_ble_spin_active'))
             self.root.after(0, lambda: self.ota_progress_var.set("Ready"))
         except Exception as e:
             import traceback
@@ -1833,6 +1844,7 @@ class MeshCoreBLEFlasher:
             traceback_str = traceback.format_exc()
             self.log(f"✗ BLE scan error: {error_msg}")
             self.log(f"Traceback: {traceback_str}")
+            self.root.after(0, lambda: self._stop_spinner(self.ota_ble_spinner_var, '_ota_ble_spin_active'))
             self.root.after(0, lambda: self.ota_progress_var.set("Scan failed"))
             def update_ui():
                 self.ota_scanned_devices = {}
@@ -1913,6 +1925,7 @@ class MeshCoreBLEFlasher:
         
         self.log("Loading contacts from local device...")
         self.ota_progress_var.set("Loading contacts...")
+        self._start_spinner(self.ota_contacts_spinner_var, '_ota_contacts_spin_active')
         thread = threading.Thread(target=self._load_contacts_thread, daemon=True, args=(ble_address,))
         thread.start()
     
@@ -2080,17 +2093,16 @@ class MeshCoreBLEFlasher:
                 # Always keep the connection active — only manual disconnect closes it
                 self.ota_meshcore = meshcore
                 self.log("✓ BLE connection kept active (disconnect manually when done)")
+                self._update_ble_status(True, original_address or "Connected")
             
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(load_contacts())
-            finally:
-                loop.close()
-            
+            future = asyncio.run_coroutine_threadsafe(load_contacts(), self.ota_event_loop)
+            future.result()  # block this thread until the coroutine completes
+
+            self.root.after(0, lambda: self._stop_spinner(self.ota_contacts_spinner_var, '_ota_contacts_spin_active'))
             self.root.after(0, lambda: self.ota_progress_var.set("Ready"))
         except Exception as e:
             error_msg = str(e)
+            self.root.after(0, lambda: self._stop_spinner(self.ota_contacts_spinner_var, '_ota_contacts_spin_active'))
             # Only show error if contacts weren't successfully loaded
             # (Sometimes connection errors occur but contacts still load via existing connection)
             if not hasattr(self, 'ota_contacts_dict') or not self.ota_contacts_dict:
@@ -2666,14 +2678,13 @@ class MeshCoreBLEFlasher:
         from meshcore.ble_cx import BLEConnection
         
         try:
-            # Create new event loop for this thread
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            # Run the async workflow
-            loop.run_until_complete(self._ota_workflow_async())
-            loop.close()
-            
+            # Submit to the shared persistent event loop so ota_meshcore (created
+            # during Load Contacts in the same loop) can be safely reused.
+            future = asyncio.run_coroutine_threadsafe(
+                self._ota_workflow_async(), self.ota_event_loop
+            )
+            future.result()  # block this thread until the workflow completes
+
         except Exception as e:
             self.log(f"\n✗ OTA workflow error: {str(e)}")
             self.root.after(0, lambda: self.ota_progress_var.set(f"Error: {str(e)}"))
@@ -2719,38 +2730,60 @@ class MeshCoreBLEFlasher:
         
         meshcore = None
         target_device_id = None  # Store target device ID
-        
+        workflow_owns_connection = False  # True only if this workflow created the BLE connection
+
         try:
-            # Step 1: Connect via BLE
-            self.root.after(0, lambda: self.ota_progress_var.set("Connecting via BLE..."))
-            self.log("\n[1/4] Connecting to device via BLE...")
-            self.log(f"  Device address: {ble_address or 'Auto-scan'}")
-            
-            try:
-                ble_conn = BLEConnection(address=ble_address)
-                meshcore = MeshCore(ble_conn, debug=False)
-                self.log("  Attempting connection...")
-                await meshcore.connect()
-                self.log("✓ BLE connected")
-                self.ota_meshcore = meshcore
-                self._update_ble_status(True, ble_address or "")
-            except Exception as e:
-                error_msg = str(e)
-                self.log(f"✗ BLE connection failed: {error_msg}")
-                # Try with None (auto-scan) if address format might be wrong
-                if ble_address and ":" not in ble_address:
-                    self.log("  Retrying with auto-scan (device name provided)...")
-                    try:
-                        ble_conn = BLEConnection(address=None)  # Auto-scan
-                        meshcore = MeshCore(ble_conn, debug=False)
-                        await meshcore.connect()
-                        self.log("✓ BLE connected via auto-scan")
-                        self.ota_meshcore = meshcore
-                        self._update_ble_status(True, "auto-scan")
-                    except Exception as e2:
-                        raise Exception(f"BLE connection failed with address and auto-scan: {error_msg}, {str(e2)}")
+            # Step 1: Reuse existing BLE connection if available, otherwise connect fresh
+            self.log("\n[1/4] Checking BLE connection...")
+            existing_mc = self.ota_meshcore
+            if existing_mc is not None:
+                try:
+                    is_live = (hasattr(existing_mc, 'connection_manager') and
+                               existing_mc.connection_manager.is_connected)
+                except Exception:
+                    is_live = False
+                if is_live:
+                    meshcore = existing_mc
+                    self.log("✓ Reusing existing BLE connection (from Load Contacts)")
+                    self.root.after(0, lambda: self.ota_progress_var.set("BLE already connected"))
                 else:
-                    raise
+                    self.log("⚠ Existing connection stale — will reconnect...")
+                    try:
+                        await existing_mc.disconnect()
+                    except Exception:
+                        pass
+                    self.ota_meshcore = None
+                    self._update_ble_status(False)
+
+            if meshcore is None:
+                workflow_owns_connection = True
+                self.root.after(0, lambda: self.ota_progress_var.set("Connecting via BLE..."))
+                self.log(f"  Device address: {ble_address or 'Auto-scan'}")
+                try:
+                    ble_conn = BLEConnection(address=ble_address)
+                    meshcore = MeshCore(ble_conn, debug=False)
+                    self.log("  Attempting connection...")
+                    await meshcore.connect()
+                    self.log("✓ BLE connected")
+                    self.ota_meshcore = meshcore
+                    self._update_ble_status(True, ble_address or "")
+                except Exception as e:
+                    error_msg = str(e)
+                    self.log(f"✗ BLE connection failed: {error_msg}")
+                    # Try with None (auto-scan) if address format might be wrong
+                    if ble_address and ":" not in ble_address:
+                        self.log("  Retrying with auto-scan (device name provided)...")
+                        try:
+                            ble_conn = BLEConnection(address=None)  # Auto-scan
+                            meshcore = MeshCore(ble_conn, debug=False)
+                            await meshcore.connect()
+                            self.log("✓ BLE connected via auto-scan")
+                            self.ota_meshcore = meshcore
+                            self._update_ble_status(True, "auto-scan")
+                        except Exception as e2:
+                            raise Exception(f"BLE connection failed with address and auto-scan: {error_msg}, {str(e2)}")
+                    else:
+                        raise
             
             # Get target device ID (device to update) - REQUIRED since we can't connect directly
             target_device_selection = self.ota_target_device_var.get().strip()
@@ -3303,12 +3336,10 @@ class MeshCoreBLEFlasher:
                                     ))
                                 # Don't disconnect here - will disconnect at end of workflow
                             
-                            loop = asyncio.new_event_loop()
-                            asyncio.set_event_loop(loop)
-                            try:
-                                loop.run_until_complete(verify_firmware_version())
-                            finally:
-                                loop.close()
+                            future = asyncio.run_coroutine_threadsafe(
+                                verify_firmware_version(), self.ota_event_loop
+                            )
+                            future.result(timeout=60)
                                 
                         except Exception as e:
                             self.log(f"⚠ Error verifying firmware version: {str(e)}")
@@ -3392,12 +3423,14 @@ class MeshCoreBLEFlasher:
             
         except Exception as e:
             self.log(f"\n✗ OTA workflow error: {str(e)}")
-            if meshcore:
+            # Only tear down the BLE link if this workflow created it — preserve pre-existing connections
+            if workflow_owns_connection and meshcore:
                 try:
                     await meshcore.disconnect()
-                except:
+                except Exception:
                     pass
                 self.ota_meshcore = None
+                self._update_ble_status(False)
             
             self.root.after(0, lambda: self.ota_progress_var.set(f"Error: {str(e)}"))
             self.root.after(0, lambda: self.ota_progress_bar.stop())
@@ -5467,6 +5500,29 @@ class MeshCoreBLEFlasher:
     # Manual connection control helpers
     # ------------------------------------------------------------------
 
+    # ------------------------------------------------------------------ spinner
+    _SPINNER_FRAMES = ('⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏')
+
+    def _start_spinner(self, var: tk.StringVar, flag: str):
+        """Activate a spinner on *var*, keyed by the bool attribute *flag*."""
+        setattr(self, flag, True)
+        self._tick_spinner(var, flag, 0)
+
+    def _stop_spinner(self, var: tk.StringVar, flag: str):
+        """Deactivate the spinner on *var*."""
+        setattr(self, flag, False)
+        var.set("")
+
+    def _tick_spinner(self, var: tk.StringVar, flag: str, idx: int):
+        """One animation tick — reschedules itself while *flag* is True."""
+        if not getattr(self, flag, False):
+            var.set("")
+            return
+        var.set(self._SPINNER_FRAMES[idx % len(self._SPINNER_FRAMES)])
+        self.root.after(100, lambda: self._tick_spinner(var, flag, idx + 1))
+
+    # ------------------------------------------------------------------ /spinner
+
     def _update_ble_status(self, connected: bool, device_name: str = ""):
         """Update the BLE status label in the OTA tab."""
         if not hasattr(self, 'ble_status_var'):
@@ -5525,10 +5581,10 @@ class MeshCoreBLEFlasher:
             if mc is not None:
                 try:
                     import asyncio
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(mc.disconnect())
-                    loop.close()
+                    future = asyncio.run_coroutine_threadsafe(
+                        mc.disconnect(), self.ota_event_loop
+                    )
+                    future.result(timeout=10)
                 except Exception:
                     pass
             self.log("✓ BLE disconnected")
@@ -5661,12 +5717,10 @@ class MeshCoreBLEFlasher:
             # Step A: Tell the device to stop the OTA hotspot via BLE before disconnecting WiFi
             self.log("\n[1/2] Telling device to stop OTA hotspot...")
             try:
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    loop.run_until_complete(self._send_stop_ota_async())
-                finally:
-                    loop.close()
+                future = asyncio.run_coroutine_threadsafe(
+                    self._send_stop_ota_async(), self.ota_event_loop
+                )
+                future.result(timeout=30)
             except Exception as e:
                 self.log(f"⚠ Could not stop OTA hotspot on device: {str(e)}")
 
@@ -5997,12 +6051,15 @@ class MeshCoreBLEFlasher:
         if ota_mc is not None:
             try:
                 import asyncio
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                loop.run_until_complete(ota_mc.disconnect())
-                loop.close()
+                future = asyncio.run_coroutine_threadsafe(
+                    ota_mc.disconnect(), self.ota_event_loop
+                )
+                future.result(timeout=5)
             except Exception:
                 pass
+
+        # Stop the shared BLE event loop
+        self.ota_event_loop.call_soon_threadsafe(self.ota_event_loop.stop)
 
         self.root.destroy()
 
