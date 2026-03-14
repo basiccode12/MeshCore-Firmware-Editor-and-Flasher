@@ -426,6 +426,16 @@ class MeshCoreBLEFlasher:
         self.serial_monitor_process = None
         self.serial_monitor_running = False
         self.serial_monitor_after_id = None
+        self._sm_shutting_down = False
+
+        # MeshCore CLI tab state
+        self.cli_serial = None
+        self.cli_running = False
+        self.cli_cmd_history = []
+        self.cli_history_idx = -1
+        self.cli_quick_btn_widgets = []  # keep refs so we can destroy/rebuild
+        self._cli_mode_active = False    # True once we see a '>' prompt
+        self._cli_no_response_id = None  # after() id for no-response hint timer
 
         self.setup_ui()
         self.check_platformio()
@@ -527,8 +537,8 @@ class MeshCoreBLEFlasher:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
         # Configure for 2 columns: content on left, logs on right
-        main_frame.columnconfigure(0, weight=3)  # Content area (75%)
-        main_frame.columnconfigure(1, weight=1)  # Log area (25%)
+        main_frame.columnconfigure(0, weight=3)           # Content area (expands)
+        main_frame.columnconfigure(1, weight=1, minsize=220)  # Log area (never < 220 px)
         main_frame.rowconfigure(0, weight=1)
         
         # Left side: Content area
@@ -565,13 +575,15 @@ class MeshCoreBLEFlasher:
         self.cpp_editor_tab = ttk.Frame(self.notebook, padding="10")
         self.ota_tab = ttk.Frame(self.notebook, padding="10")
         self.serial_monitor_tab = ttk.Frame(self.notebook, padding="10")
-        
+        self.cli_tab = ttk.Frame(self.notebook, padding="10")
+
         self.notebook.add(self.welcome_tab, text="🏠 Welcome")
         self.notebook.add(self.firmware_tab, text="📦 Firmware")
         self.notebook.add(self.cpp_editor_tab, text="main.cpp")
         self.notebook.add(self.settings_tab, text="platformio.ini")
         self.notebook.add(self.ota_tab, text="📡 OTA Update")
         self.notebook.add(self.serial_monitor_tab, text="🖥️ Serial Monitor")
+        self.notebook.add(self.cli_tab, text="⌨️ MeshCore CLI")
         
         # Setup welcome tab
         self.setup_welcome_tab()
@@ -590,6 +602,12 @@ class MeshCoreBLEFlasher:
 
         # Setup Serial Monitor tab
         self.setup_serial_monitor_tab()
+
+        # Setup MeshCore CLI tab
+        self.setup_cli_tab()
+
+        # Auto-start serial monitor once the main loop is running
+        self.root.after(500, self.start_serial_monitor)
         
         # Load OTA checkbox settings (after OTA tab is set up)
         self.load_ota_checkbox_settings()
@@ -625,24 +643,24 @@ class MeshCoreBLEFlasher:
         purpose_frame = ttk.LabelFrame(welcome_frame, text="Purpose", padding="15")
         purpose_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
         purpose_frame.columnconfigure(0, weight=1)
-        
-        purpose_text = (
+        purpose_label = ttk.Label(purpose_frame, font=('Arial', 10),
+                                  foreground='black', justify=tk.LEFT, wraplength=800,
+                                  text=(
             "This application gives MeshCore enthusiasts a single, intuitive place to manage firmware — "
-            "from downloading source code and editing key settings, to compiling, flashing, and performing "
-            "over-the-air (OTA) updates.\n\n"
+            "from downloading source code and editing key settings, to compiling, flashing, OTA updates, "
+            "and direct serial CLI access.\n\n"
             "All UI changes are reflected directly in the underlying source files so you always know "
             "exactly what the firmware will contain."
-        )
-        purpose_label = ttk.Label(purpose_frame, text=purpose_text, font=('Arial', 10),
-                                  foreground='black', justify=tk.LEFT, wraplength=800)
+        ))
         purpose_label.grid(row=0, column=0, sticky=tk.W)
-        
+
         # Key Features section
         features_frame = ttk.LabelFrame(welcome_frame, text="Key Features", padding="15")
         features_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
         features_frame.columnconfigure(0, weight=1)
-        
-        features_text = (
+        features_label = ttk.Label(features_frame, font=('Arial', 9),
+                                   foreground='black', justify=tk.LEFT, wraplength=800,
+                                   text=(
             "📦 FIRMWARE MANAGEMENT\n"
             "   • Download firmware from GitHub — Companion Radio, Repeater Radio, or Room Server\n"
             "   • Browse and load local firmware files\n"
@@ -660,96 +678,109 @@ class MeshCoreBLEFlasher:
             "   • Compile firmware using PlatformIO for your selected device\n"
             "   • Flash via USB — select a specific serial port or use Auto-detect\n"
             "   • Flash pre-built .bin files directly — no compilation needed\n"
+            "   • Flash modes: Update Only (keeps settings) or Full Erase (wipes entire flash)\n"
             "   • 🔄 Refresh Ports to rescan available serial ports at any time\n\n"
             "📡 OTA UPDATE\n"
             "   • Wireless firmware updates via the MeshCore OTA workflow\n"
             "   • BLE scan → load contacts → send 'start ota' → auto-connect to MeshCore-OTA WiFi\n"
-            "   • Embedded browser upload (optional tkinterweb) or external browser\n"
-            "   • Monitors completion and reconnects your previous WiFi automatically\n"
-            "   • Manual BLE and WiFi disconnect — no automatic teardown\n\n"
+            "   • Upload .bin via ElegantOTA in your browser; confirmation dialog waits for you\n"
+            "   • Reconnects to your previous WiFi on completion\n\n"
             "🖥️ SERIAL MONITOR\n"
-            "   • Live device output streamed directly in the app\n"
-            "   • Auto-starts when you switch to the tab\n\n"
+            "   • Always-on live device output — starts automatically, auto-reconnects if unplugged\n"
+            "   • Uses pyserial directly — no PlatformIO subprocess required\n"
+            "   • Port sharing — pauses automatically when CLI tab takes the connection\n\n"
+            "⌨️ MESHCORE CLI\n"
+            "   • Direct serial CLI — send any MeshCore command over USB serial\n"
+            "   • Context-sensitive quick buttons for Repeater, Companion, and Room Server\n"
+            "   • Collapsible command groups (Info, Logging, Radio, Power, Region, GPS, Manage)\n"
+            "   • Hover tooltips on every button with full command description\n"
+            "   • CLI mode detection — confirms when '>' prompt is active\n"
+            "   • No-response watchdog — guides you if commands aren't getting replies\n"
+            "   • Command history navigation with ↑/↓ arrow keys\n\n"
             "🎨 USER INTERFACE\n"
             "   • BLE and WiFi status dots turn green when connected\n"
-            "   • Fullscreen layout with vertical log panel\n"
+            "   • Fullscreen layout with vertical log panel (minimum width enforced)\n"
             "   • Device memory — remembers last BLE device, target, and serial port\n"
-            "   • Tabs: Welcome · Firmware · main.cpp · platformio.ini · OTA Update · Serial Monitor"
-        )
-        features_label = ttk.Label(features_frame, text=features_text, font=('Arial', 9),
-                                  foreground='black', justify=tk.LEFT, wraplength=800)
+            "   • Tabs: Welcome · Firmware · main.cpp · platformio.ini · OTA Update · Serial Monitor · MeshCore CLI"
+        ))
         features_label.grid(row=0, column=0, sticky=tk.W)
-        
+
         # Workflow section
-        workflow_frame = ttk.LabelFrame(welcome_frame, text="Typical Workflow", padding="15")
+        workflow_frame = ttk.LabelFrame(welcome_frame, text="Typical Workflows", padding="15")
         workflow_frame.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
         workflow_frame.columnconfigure(0, weight=1)
-        
-        workflow_text = (
+        workflow_label = ttk.Label(workflow_frame, font=('Arial', 9),
+                                   foreground='black', justify=tk.LEFT, wraplength=800,
+                                   text=(
             "Compile & Flash from source:\n"
-            "  1. 📦 Firmware tab  — select type, download or browse, set optional BLE name\n"
-            "  2. ✏️ main.cpp tab  — review or edit source code\n"
+            "  1. 📦 Firmware tab   — select type, download or browse, set optional BLE name\n"
+            "  2. ✏️ main.cpp tab   — review or edit source code\n"
             "  3. ⚙️ platformio.ini — adjust build settings if needed\n"
-            "  4. 🔨 Compile       — build firmware (BLE name applied automatically)\n"
-            "  5. ⚡ Flash         — select serial port and upload to device\n\n"
+            "  4. 🔨 Compile        — build firmware (BLE name applied automatically)\n"
+            "  5. ⚡ Flash          — select serial port, choose flash mode, and upload\n\n"
             "Flash a pre-built .bin:\n"
             "  1. 📦 Firmware tab  — click Browse .bin, select your file\n"
             "  2. ⚡ Flash .bin    — select serial port and flash immediately\n\n"
             "OTA Update:\n"
             "  1. 📡 OTA Update tab — scan for and select your local BLE gateway device\n"
             "  2. Load Contacts     — fetch the device contact list, select the remote target\n"
-            "  3. Start OTA Update  — the app handles BLE, WiFi, upload page, and reconnect"
-        )
-        workflow_label = ttk.Label(workflow_frame, text=workflow_text, font=('Arial', 9),
-                                   foreground='black', justify=tk.LEFT, wraplength=800)
+            "  3. Start OTA Update  — app handles BLE, WiFi, and opens upload page in browser\n"
+            "  4. Upload .bin       — upload in the browser, then confirm in the dialog\n\n"
+            "Serial CLI:\n"
+            "  1. ⌨️ MeshCore CLI tab — select port/baud, click Connect\n"
+            "  2. Enter CLI mode       — usually hold BOOT on device, power on\n"
+            "  3. Wait for '>'         — a '>' prompt confirms CLI mode is active\n"
+            "  4. Select device type  — quick buttons update for Repeater / Companion / Room\n"
+            "  5. Expand a group      — click any ▸ header, then click a command button\n"
+            "  6. Disconnect          — Serial Monitor resumes automatically"
+        ))
         workflow_label.grid(row=0, column=0, sticky=tk.W)
-        
+
         # Requirements section
         requirements_frame = ttk.LabelFrame(welcome_frame, text="Requirements", padding="15")
         requirements_frame.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
         requirements_frame.columnconfigure(0, weight=1)
-        
-        requirements_text = (
+        requirements_label = ttk.Label(requirements_frame, font=('Arial', 9),
+                                       foreground='black', justify=tk.LEFT, wraplength=800,
+                                       text=(
             "• Python 3.8 or higher\n"
-            "• PlatformIO  (auto-installed — needed for compile/flash)\n"
-            "• Git  (auto-installed — needed to download firmware from GitHub)\n"
+            "• pyserial  — pip install pyserial  (required for Serial Monitor and CLI)\n"
+            "• PlatformIO  — pip install platformio  (required for compile/flash)\n"
+            "• Git  (required to download firmware from GitHub)\n"
             "• meshcore  — pip install meshcore  (required for OTA)\n"
             "• bleak  — pip install bleak  (required for BLE in OTA)\n"
             "• Optional: tkinterweb  — pip install tkinterweb  (embedded browser in OTA tab)\n"
             "• Optional: QScintilla / PyQt5  — pip install QScintilla PyQt5  (syntax highlighting)\n"
             "• Linux OTA: NetworkManager (nmcli) for automatic WiFi management"
-        )
-        requirements_label = ttk.Label(requirements_frame, text=requirements_text, font=('Arial', 9),
-                                       foreground='black', justify=tk.LEFT, wraplength=800)
+        ))
         requirements_label.grid(row=0, column=0, sticky=tk.W)
-        
+
         # Repository section
         repo_frame = ttk.LabelFrame(welcome_frame, text="Repository & License", padding="15")
         repo_frame.grid(row=6, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
         repo_frame.columnconfigure(0, weight=1)
-        
-        repo_text = (
+        repo_label = ttk.Label(repo_frame, font=('Arial', 9),
+                               foreground='black', justify=tk.LEFT, wraplength=800,
+                               text=(
             "Repository: https://github.com/basiccode12/Meshcore-Firmware-Editor-and-Flasher\n"
             "License: MIT License\n\n"
             "Contributions, bug reports, and feature requests are welcome via GitHub Issues."
-        )
-        repo_label = ttk.Label(repo_frame, text=repo_text, font=('Arial', 9),
-                              foreground='black', justify=tk.LEFT, wraplength=800)
+        ))
         repo_label.grid(row=0, column=0, sticky=tk.W)
-        
+
         # Getting Started section
         getting_started_frame = ttk.LabelFrame(welcome_frame, text="Getting Started", padding="15")
         getting_started_frame.grid(row=7, column=0, sticky=(tk.W, tk.E), pady=(0, 15))
         getting_started_frame.columnconfigure(0, weight=1)
-        
-        getting_started_text = (
+        getting_started_label = ttk.Label(getting_started_frame, font=('Arial', 9),
+                                          foreground='black', justify=tk.LEFT, wraplength=800,
+                                          text=(
             "Head to the 📦 Firmware tab to download or load a firmware project — that's all you need "
             "to get started. All operations are logged in the panel on the right.\n\n"
-            "BLE and WiFi connection dots at the top of the OTA and CLI tabs turn green when connected, "
-            "so you always know the current state at a glance."
-        )
-        getting_started_label = ttk.Label(getting_started_frame, text=getting_started_text, font=('Arial', 9),
-                                         foreground='black', justify=tk.LEFT, wraplength=800)
+            "For live device output, the 🖥️ Serial Monitor starts automatically.\n\n"
+            "For interactive configuration, use the ⌨️ MeshCore CLI tab — connect, "
+            "enter CLI mode on the device, and start sending commands. Hover any quick-button for a full description."
+        ))
         getting_started_label.grid(row=0, column=0, sticky=tk.W)
     
     def setup_firmware_tab(self):
@@ -1881,16 +1912,21 @@ class MeshCoreBLEFlasher:
             self.log(f"Device selected: {selected_value}")
         
         self.save_ota_device_settings()
-        
-        # Check cache first - if contacts are cached, load them immediately
+
+        # Use cache only if it has actual contacts; empty cache means we still need to connect
         if ble_address and ble_address in self.ota_contacts_cache:
             contact_list, contact_dict = self.ota_contacts_cache[ble_address]
-            self.log(f"✓ Using cached contacts for {ble_address} ({len(contact_list)} contacts)")
-            self._populate_contacts_dropdown(contact_list, contact_dict)
-            self.ota_progress_var.set("Ready")
-        else:
-            # No cache - auto-connect and load contacts if device is available
-            self._auto_connect_and_load_contacts()
+            if contact_list:
+                self.log(f"✓ Using cached contacts for {ble_address} ({len(contact_list)} contacts)")
+                self._populate_contacts_dropdown(contact_list, contact_dict)
+                self.ota_progress_var.set("Ready")
+                return
+            else:
+                # Stale empty cache — remove it and fetch fresh
+                del self.ota_contacts_cache[ble_address]
+
+        # No valid cache — auto-connect and load contacts
+        self._auto_connect_and_load_contacts()
     
     def load_contacts_from_device(self):
         """Load contacts from the local BLE device and populate the target device dropdown"""
@@ -1914,15 +1950,18 @@ class MeshCoreBLEFlasher:
         if not ble_address:
             messagebox.showwarning("No Device", "Please select a local BLE device first.")
             return
-        
-        # Check cache first
-        if ble_address in self.ota_contacts_cache:
-            contact_list, contact_dict = self.ota_contacts_cache[ble_address]
-            self.log(f"✓ Using cached contacts for {ble_address} ({len(contact_list)} contacts)")
-            self.root.after(0, lambda: self._populate_contacts_dropdown(contact_list, contact_dict))
-            self.root.after(0, lambda: self.ota_progress_var.set("Ready"))
+
+        # Prevent concurrent BLE contact-load operations — two simultaneous
+        # BLE connections to the same device will segfault the native library.
+        if self._ota_contacts_spin_active:
+            self.log("⚠ Contact load already in progress, please wait...")
             return
-        
+
+        # Always fetch fresh when user explicitly clicks Load Contacts —
+        # remove any stale (especially empty) cache entry for this device
+        if ble_address in self.ota_contacts_cache:
+            del self.ota_contacts_cache[ble_address]
+
         self.log("Loading contacts from local device...")
         self.ota_progress_var.set("Loading contacts...")
         self._start_spinner(self.ota_contacts_spinner_var, '_ota_contacts_spin_active')
@@ -2474,31 +2513,34 @@ class MeshCoreBLEFlasher:
     
     def monitor_ota_completion(self, max_wait_time=300):
         """Monitor OTA completion by checking if device is still in OTA mode"""
-        # Poll the OTA URL to see if device is still responding
-        # Once it stops responding, OTA is likely complete
+        # Poll the OTA URL to see if device is still responding.
+        # Only declare completion if we first got at least one successful response,
+        # then subsequently lost contact — this prevents premature exit when the
+        # device hasn't started serving the OTA page yet.
+        import urllib.request
         start_time = time.time()
-        last_response_time = start_time
-        
+        last_response_time = None  # None until we get the first successful response
+        got_first_response = False
+
         while time.time() - start_time < max_wait_time:
             try:
-                # Try to connect to OTA page
-                import urllib.request
                 req = urllib.request.Request(self.ota_upload_url, method='HEAD')
-                req.timeout = 5
                 try:
-                    urllib.request.urlopen(req)
+                    urllib.request.urlopen(req, timeout=5)  # timeout must be on urlopen
                     last_response_time = time.time()
+                    got_first_response = True
                     self.log("  Device still in OTA mode...")
                 except:
-                    # If we can't connect, device might have rebooted
-                    if time.time() - last_response_time > 10:
+                    # Only consider OTA complete if we previously had a response and
+                    # it's been more than 10 seconds since the last one.
+                    if got_first_response and time.time() - last_response_time > 10:
                         self.log("  Device appears to have completed OTA (no longer responding)")
                         return True
             except Exception:
                 pass
-            
+
             time.sleep(10)  # Wait 10 seconds before retesting WiFi
-        
+
         self.log("  OTA monitoring timeout - assuming complete")
         return True
     
@@ -2572,11 +2614,15 @@ class MeshCoreBLEFlasher:
     
     def _auto_connect_and_load_contacts(self):
         """Auto-connect to BLE device and load contacts if device is available"""
+        # Don't start another BLE operation if one is already running
+        if self._ota_contacts_spin_active:
+            return
+
         selected_value = self.ota_ble_device_var.get().strip()
-        
+
         if not selected_value or selected_value == "Auto-scan":
             return
-        
+
         # Check if device is in scanned devices
         if selected_value not in self.ota_scanned_devices:
             return
@@ -3010,40 +3056,34 @@ class MeshCoreBLEFlasher:
             # Load browser (embedded or external)
             self.root.after(0, self.load_ota_upload_page)
             self.log("✓ Upload page loaded - please upload your .bin firmware file")
-            
-            # Monitor OTA completion
-            self.root.after(0, lambda: self.ota_progress_var.set("Monitoring OTA upload..."))
-            self.log("\nMonitoring OTA upload progress...")
-            self.log("(This may take 1-5 minutes depending on file size)")
-            
-            # Monitor in background thread (non-blocking)
+
+            # Show confirmation dialog immediately in a background thread —
+            # don't wait for polling; let the browser stay in the foreground.
             def monitor_thread():
                 import threading
-                self.monitor_ota_completion(max_wait_time=300)  # 5 minutes max
-                
-                # Show first confirmation dialog
+
+                # Give the browser a moment to open before showing the dialog
+                time.sleep(2)
+
                 self.log("\n" + "="*60)
-                self.log("OTA upload appears to be complete.")
-                self.log("A confirmation dialog is waiting in the application.")
-                self.log("Please return to the app window to confirm when ready.")
-                self.log("You can continue working in the browser - the dialog will wait.")
+                self.log("Upload the firmware in your browser, then confirm here when done.")
+                self.log("The dialog is ready — return to the app whenever you are finished.")
                 self.log("="*60)
-                
+
+                self.root.after(0, lambda: self.ota_progress_var.set("Upload firmware in browser — confirm here when done"))
+
                 # Use threading events to wait for user confirmation
                 first_confirmed = threading.Event()
                 first_result = [None]
-                
+
                 def show_first_confirmation():
-                    # Don't force window to front - let user return manually
-                    # The dialog will appear when user switches back to the app
+                    # Keep app window behind the browser
                     self.root.attributes('-topmost', False)
-                    # Lower the window to keep it behind browser
                     self.root.lower()
-                    # Use update_idletasks to ensure attributes are applied
                     self.root.update_idletasks()
                     result = messagebox.askyesno(
                         "OTA Upload Complete?",
-                        "The OTA upload appears to be complete.\n\n"
+                        "Upload the firmware .bin in your browser, then confirm here.\n\n"
                         "Please verify in the browser that:\n"
                         "• The firmware file was uploaded successfully\n"
                         "• The device has finished processing the update\n"
@@ -3054,23 +3094,22 @@ class MeshCoreBLEFlasher:
                     )
                     first_result[0] = result
                     first_confirmed.set()
-                    # Keep window lowered after dialog closes
                     self.root.lower()
                     self.root.attributes('-topmost', False)
-                
-                # Update progress to show dialog is waiting
-                self.root.after(0, lambda: self.ota_progress_var.set("Confirmation dialog waiting - return to app when ready"))
-                
-                # Show dialog but don't force focus
-                self.root.after(0, show_first_confirmation)
-                
-                # Wait for first confirmation (with timeout)
-                first_confirmed.wait(timeout=600)  # 10 minute timeout
-                
-                if not first_result[0]:
-                    self.log("⚠ User indicated upload may not be complete - workflow paused")
-                    self.root.after(0, lambda: self.ota_progress_var.set("Waiting for upload confirmation..."))
-                    return
+
+                # Loop until the user confirms the upload is complete
+                while True:
+                    first_confirmed.clear()
+                    first_result[0] = None
+
+                    self.root.after(0, show_first_confirmation)
+                    first_confirmed.wait(timeout=600)  # 10 minute timeout
+
+                    if first_result[0]:
+                        break  # User confirmed — proceed
+
+                    self.log("⚠ User indicated upload is not complete yet - dialog will reappear...")
+                    self.root.after(0, lambda: self.ota_progress_var.set("Waiting for OTA upload to complete..."))
                 
                 # Second confirmation - final confirmation before finishing
                 second_confirmed = threading.Event()
@@ -3114,18 +3153,24 @@ class MeshCoreBLEFlasher:
                 self.log("First confirmation received.")
                 self.log("A final confirmation dialog is waiting in the application.")
                 self.log("Please return to the app window when ready to complete the workflow.")
-                
-                # Update progress to show final dialog is waiting
-                self.root.after(0, lambda: self.ota_progress_var.set("Final confirmation dialog waiting - return to app when ready"))
-                self.root.after(0, show_second_confirmation)
-                
-                # Wait for second confirmation
-                second_confirmed.wait(timeout=600)  # 10 minute timeout
-                
-                if not second_result[0]:
-                    self.log("⚠ User cancelled final confirmation - workflow paused")
-                    self.root.after(0, lambda: self.ota_progress_var.set("Workflow paused - waiting for confirmation"))
-                    return
+
+                # Loop until the user gives final confirmation
+                while True:
+                    second_confirmed.clear()
+                    second_result[0] = None
+
+                    # Update progress to show final dialog is waiting
+                    self.root.after(0, lambda: self.ota_progress_var.set("Final confirmation dialog waiting - return to app when ready"))
+                    self.root.after(0, show_second_confirmation)
+
+                    # Wait for second confirmation
+                    second_confirmed.wait(timeout=600)  # 10 minute timeout
+
+                    if second_result[0]:
+                        break  # User confirmed — proceed
+
+                    self.log("⚠ User cancelled final confirmation - asking again...")
+                    self.root.after(0, lambda: self.ota_progress_var.set("Waiting for final confirmation..."))
                 
                 # Both confirmations received - proceed with completion
                 self.log("\n✓ Both confirmations received. Completing workflow...")
@@ -5772,6 +5817,7 @@ class MeshCoreBLEFlasher:
         self.sm_port_combo = ttk.Combobox(ctrl_frame, textvariable=self.sm_port_var,
                                           values=["Auto"], state='readonly', width=20)
         self.sm_port_combo.grid(row=0, column=1, padx=(0, 8))
+        self.sm_port_var.trace_add('write', lambda *_: self._sm_restart())
 
         ttk.Label(ctrl_frame, text="Baud:").grid(row=0, column=2, padx=(0, 4), sticky=tk.W)
         self.sm_baud_var = tk.StringVar(value="115200")
@@ -5779,15 +5825,12 @@ class MeshCoreBLEFlasher:
                                      values=["9600", "38400", "57600", "115200", "230400", "921600"],
                                      state='readonly', width=10)
         sm_baud_combo.grid(row=0, column=3, padx=(0, 8))
+        self.sm_baud_var.trace_add('write', lambda *_: self._sm_restart())
 
-        self.sm_start_btn = ttk.Button(ctrl_frame, text="▶ Start", width=10,
-                                       command=self.start_serial_monitor)
-        self.sm_start_btn.grid(row=0, column=4, padx=(0, 4))
-        self.sm_stop_btn = ttk.Button(ctrl_frame, text="⏹ Stop", width=10,
-                                      command=self.stop_serial_monitor, state='disabled')
-        self.sm_stop_btn.grid(row=0, column=5, padx=(0, 8))
+        ttk.Button(ctrl_frame, text="🔄 Refresh Ports", width=14,
+                   command=self.refresh_serial_ports_combo).grid(row=0, column=4, padx=(0, 8))
         ttk.Button(ctrl_frame, text="🗑 Clear", width=10,
-                   command=self.clear_serial_monitor).grid(row=0, column=6)
+                   command=self.clear_serial_monitor).grid(row=0, column=5)
 
         # Output area
         out_frame = ttk.Frame(self.serial_monitor_tab)
@@ -5822,6 +5865,13 @@ class MeshCoreBLEFlasher:
             if current not in values:
                 self.sm_port_var.set("Auto")
 
+        # CLI tab port combo
+        if hasattr(self, 'cli_port_combo'):
+            current = self.cli_port_var.get()
+            self.cli_port_combo['values'] = values
+            if current not in values:
+                self.cli_port_var.set("Auto")
+
     def _scan_serial_ports(self):
         """Return a list of available serial port names."""
         ports = []
@@ -5853,66 +5903,84 @@ class MeshCoreBLEFlasher:
         return ports
 
     def start_serial_monitor(self):
-        """Start the serial monitor using pio device monitor."""
+        """Start the serial monitor using pyserial directly (no pio subprocess)."""
         if self.serial_monitor_running:
             return
 
+        import serial as _serial
+
         port = self.sm_port_var.get()
-        baud = self.sm_baud_var.get()
+        baud = int(self.sm_baud_var.get())
 
-        cmd = ['pio', 'device', 'monitor', '--baud', baud]
-        if port and port != "Auto":
-            cmd += ['--port', port]
+        if port == "Auto":
+            detected = self._scan_serial_ports()
+            if not detected:
+                self._sm_append("⚠ No serial port detected. Connect a device and click Refresh Ports.\n")
+                return
+            port = detected[0]
+            self._sm_append(f"ℹ Auto-selected port: {port}\n")
 
-        self._sm_append(f"\n▶ Starting monitor (port={port}, baud={baud})...\n")
+        self._sm_append(f"\n▶ Opening {port} at {baud} baud...\n")
 
         try:
-            self.serial_monitor_process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
-            )
-        except FileNotFoundError:
-            self._sm_append("✗ 'pio' not found. Make sure PlatformIO is installed.\n")
+            self.serial_monitor_process = _serial.Serial(port, baud, timeout=0.1)
+        except Exception as e:
+            self._sm_append(f"✗ Could not open {port}: {e}\n")
             return
 
         self.serial_monitor_running = True
-        self.sm_start_btn.config(state='disabled')
-        self.sm_stop_btn.config(state='normal')
-        self.sm_status_var.set("Running…")
+        self.sm_status_var.set(f"Running  {port}")
 
         thread = threading.Thread(target=self._sm_reader_thread, daemon=True)
         thread.start()
 
     def _sm_reader_thread(self):
-        """Background thread that reads from the monitor process."""
+        """Background thread — reads bytes from the open serial port."""
+        buf = b""
+        ser = self.serial_monitor_process
         try:
-            for line in self.serial_monitor_process.stdout:
-                if not self.serial_monitor_running:
-                    break
-                self.root.after(0, lambda l=line: self._sm_append(l))
+            while self.serial_monitor_running and ser and ser.is_open:
+                chunk = ser.read(256)
+                if chunk:
+                    buf += chunk
+                    # Flush complete lines; keep partial line in buffer
+                    while b'\n' in buf:
+                        line, buf = buf.split(b'\n', 1)
+                        text = line.decode('utf-8', errors='replace').rstrip('\r') + '\n'
+                        self.root.after(0, lambda t=text: self._sm_append(t))
         except Exception:
             pass
         self.root.after(0, self._sm_on_stopped)
 
     def _sm_on_stopped(self):
+        """Called when the reader thread exits — auto-restart after a short delay."""
         self.serial_monitor_running = False
-        self.sm_start_btn.config(state='normal')
-        self.sm_stop_btn.config(state='disabled')
-        self.sm_status_var.set("Stopped")
-        self._sm_append("\n⏹ Monitor stopped.\n")
+        if self._sm_shutting_down:
+            return
+        self.sm_status_var.set("Reconnecting…")
+        self._sm_append("⚠ Monitor stopped — reconnecting in 3 s...\n")
+        self.root.after(3000, self._sm_auto_restart)
+
+    def _sm_auto_restart(self):
+        """Restart the monitor if not already running (called after a disconnect)."""
+        if not self._sm_shutting_down and not self.serial_monitor_running:
+            self.start_serial_monitor()
+
+    def _sm_restart(self):
+        """Stop and immediately restart — used when port/baud changes."""
+        self.stop_serial_monitor()
+        self.root.after(500, self.start_serial_monitor)
 
     def stop_serial_monitor(self):
-        """Stop the running serial monitor."""
+        """Close the serial port and stop the monitor (without auto-restart)."""
         self.serial_monitor_running = False
         if self.serial_monitor_process:
             try:
-                self.serial_monitor_process.terminate()
+                self.serial_monitor_process.close()
             except Exception:
                 pass
             self.serial_monitor_process = None
+        self.sm_status_var.set("Stopped")
 
     def clear_serial_monitor(self):
         """Clear the serial monitor output area."""
@@ -6038,7 +6106,8 @@ class MeshCoreBLEFlasher:
         except Exception:
             pass
         
-        # Stop serial monitor if running
+        # Stop serial monitor if running (set flag first to prevent auto-restart)
+        self._sm_shutting_down = True
         self.stop_serial_monitor()
 
         # Stop OTA server if running
@@ -6062,6 +6131,548 @@ class MeshCoreBLEFlasher:
         self.ota_event_loop.call_soon_threadsafe(self.ota_event_loop.stop)
 
         self.root.destroy()
+
+
+    # ──────────────────────────────────────────────────────────────────────────
+    # MeshCore CLI tab
+    # ──────────────────────────────────────────────────────────────────────────
+
+    # Per-device-type quick-button definitions.
+    # Each entry: (button_label, command_string, tooltip_description)
+    _CLI_COMMANDS = {
+        "repeater": {
+            "Info": [
+                ("ver",         "ver",         "Show firmware version and build date"),
+                ("clock",       "clock",       "Display current time from the device clock"),
+                ("neighbors",   "neighbors",   "List nearby repeater nodes heard via zero-hop adverts (id, timestamp, SNR)"),
+                ("advert",      "advert",      "Broadcast an advertisement packet immediately"),
+                ("clear stats", "clear stats", "Reset all packet and airtime statistics counters to zero"),
+                ("get acl",     "get acl",     "Show the Access Control List of authorised nodes"),
+            ],
+            "Logging": [
+                ("log",       "log",       "Stream the full packet log from the file system to the console (serial only)"),
+                ("log start", "log start", "Begin recording packets to the on-device log file"),
+                ("log stop",  "log stop",  "Stop recording packets to the log file"),
+                ("log erase", "log erase", "Delete the stored packet log from the file system"),
+            ],
+            "Radio": [
+                ("get freq",   "get freq",   "Read the current LoRa centre frequency (MHz)"),
+                ("get radio",  "get radio",  "Read all radio parameters: frequency, bandwidth, spreading factor, coding rate"),
+                ("get tx",     "get tx",     "Read the current TX power setting (dBm)"),
+                ("get af",     "get af",     "Read the air-time factor — scales how aggressively the node uses airtime"),
+                ("get txdelay","get txdelay","Read the TX delay factor used to reduce flood packet collisions"),
+            ],
+            "Power": [
+                ("powersaving",     "powersaving",     "Show the current power saving mode (on or off)"),
+                ("powersaving on",  "powersaving on",  "Enable power saving mode (persisted to preferences). Available from v1.12.0+"),
+                ("powersaving off", "powersaving off", "Disable power saving mode (persisted to preferences)"),
+            ],
+            "Region": [
+                ("region",      "region",      "List all defined regions and current flood permissions (serial only)"),
+                ("region home", "region home", "Show the current 'home' region assigned to this node"),
+                ("region save", "region save", "Persist the current region list and permissions to storage"),
+            ],
+            "GPS": [
+                ("gps",        "gps",        "Show GPS status: on/off, fix status, and satellite count"),
+                ("gps on",     "gps on",     "Power on the GPS module"),
+                ("gps off",    "gps off",    "Power off the GPS module"),
+                ("gps sync",   "gps sync",   "Sync the node clock with the GPS clock"),
+                ("gps setloc", "gps setloc", "Set the node's position to the current GPS coordinates and save to preferences"),
+            ],
+            "Manage": [
+                ("reboot",    "reboot",    "Soft-reboot the device (you will see a Timeout response — this is normal)"),
+                ("erase FS",  "erase",     "Completely erase the device's local file system. WARNING: all stored data is lost (serial only)"),
+                ("start ota", "start ota", "Kick off OTA firmware update — device will create a MeshCore-OTA WiFi hotspot"),
+            ],
+        },
+        "companion": {
+            "Info": [
+                ("ver",         "ver",         "Show firmware version and build date"),
+                ("clock",       "clock",       "Display current time from the device clock"),
+                ("advert",      "advert",      "Broadcast an advertisement packet immediately"),
+                ("clear stats", "clear stats", "Reset all packet and airtime statistics counters to zero"),
+            ],
+            "Logging": [
+                ("log",       "log",       "Stream the full packet log to the console (serial only)"),
+                ("log start", "log start", "Begin recording packets to the on-device log file"),
+                ("log stop",  "log stop",  "Stop recording packets to the log file"),
+                ("log erase", "log erase", "Delete the stored packet log from the file system"),
+            ],
+            "Radio": [
+                ("get freq",  "get freq",  "Read the current LoRa centre frequency (MHz)"),
+                ("get radio", "get radio", "Read all radio parameters: frequency, bandwidth, spreading factor, coding rate"),
+                ("get tx",    "get tx",    "Read the current TX power setting (dBm)"),
+                ("get af",    "get af",    "Read the air-time factor"),
+            ],
+            "GPS": [
+                ("gps",        "gps",        "Show GPS status: on/off, fix status, and satellite count"),
+                ("gps on",     "gps on",     "Power on the GPS module"),
+                ("gps off",    "gps off",    "Power off the GPS module"),
+                ("gps sync",   "gps sync",   "Sync the node clock with the GPS clock"),
+                ("gps setloc", "gps setloc", "Set the node's position to current GPS coordinates and save to preferences"),
+            ],
+            "Manage": [
+                ("reboot",    "reboot",    "Soft-reboot the device"),
+                ("erase FS",  "erase",     "Completely erase the device's local file system. WARNING: all stored data is lost (serial only)"),
+                ("start ota", "start ota", "Kick off OTA firmware update — device creates a MeshCore-OTA WiFi hotspot"),
+            ],
+        },
+        "room": {
+            "Info": [
+                ("ver",         "ver",         "Show firmware version and build date"),
+                ("clock",       "clock",       "Display current time from the device clock"),
+                ("advert",      "advert",      "Broadcast an advertisement packet immediately"),
+                ("clear stats", "clear stats", "Reset all packet and airtime statistics counters to zero"),
+                ("get acl",     "get acl",     "Show the Access Control List of authorised nodes"),
+            ],
+            "Logging": [
+                ("log",       "log",       "Stream the full packet log to the console (serial only)"),
+                ("log start", "log start", "Begin recording packets to the on-device log file"),
+                ("log stop",  "log stop",  "Stop recording packets to the log file"),
+                ("log erase", "log erase", "Delete the stored packet log from the file system"),
+            ],
+            "Radio": [
+                ("get freq",  "get freq",  "Read the current LoRa centre frequency (MHz)"),
+                ("get radio", "get radio", "Read all radio parameters: frequency, bandwidth, spreading factor, coding rate"),
+                ("get tx",    "get tx",    "Read the current TX power setting (dBm)"),
+                ("get af",    "get af",    "Read the air-time factor"),
+            ],
+            "Room": [
+                ("read only on",  "set allow.read.only on",  "Allow login with blank password for read-only access (cannot post to room)"),
+                ("read only off", "set allow.read.only off", "Require authentication to read — disables anonymous read-only access"),
+                ("guest pw",      None,                      "Set the guest password — guests can send 'Get Stats' requests"),
+            ],
+            "Manage": [
+                ("reboot",    "reboot",    "Soft-reboot the device"),
+                ("erase FS",  "erase",     "Completely erase the device's local file system. WARNING: all stored data is lost (serial only)"),
+                ("start ota", "start ota", "Kick off OTA firmware update — device creates a MeshCore-OTA WiFi hotspot"),
+            ],
+        },
+    }
+
+    @staticmethod
+    def _attach_tooltip(widget, text: str):
+        """Show a small tooltip popup when the mouse hovers over *widget*."""
+        tip_win = [None]
+
+        def show(event=None):
+            if tip_win[0] or not text:
+                return
+            x = widget.winfo_rootx() + 20
+            y = widget.winfo_rooty() + widget.winfo_height() + 4
+            tw = tk.Toplevel(widget)
+            tw.wm_overrideredirect(True)
+            tw.wm_geometry(f"+{x}+{y}")
+            tw.attributes('-topmost', True)
+            lbl = tk.Label(tw, text=text, justify='left',
+                           background='#ffffe0', relief='solid', borderwidth=1,
+                           font=('Arial', 8), wraplength=320, padx=4, pady=3)
+            lbl.pack()
+            tip_win[0] = tw
+
+        def hide(event=None):
+            if tip_win[0]:
+                tip_win[0].destroy()
+                tip_win[0] = None
+
+        widget.bind('<Enter>', show)
+        widget.bind('<Leave>', hide)
+        widget.bind('<ButtonPress>', hide)
+
+    def setup_cli_tab(self):
+        """Build the MeshCore CLI tab."""
+        f = self.cli_tab
+        f.columnconfigure(0, weight=1)
+        f.rowconfigure(3, weight=1)   # terminal expands
+
+        # ── Title row ───────────────────────────────────────────────────────
+        title_f = ttk.Frame(f)
+        title_f.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 6))
+        title_f.columnconfigure(1, weight=1)
+        ttk.Label(title_f, text="⌨️ MeshCore CLI",
+                  font=('Arial', 14, 'bold')).grid(row=0, column=0, sticky=tk.W)
+        self.cli_status_var = tk.StringVar(value="Disconnected")
+        ttk.Label(title_f, textvariable=self.cli_status_var,
+                  font=('Arial', 9), foreground='gray').grid(row=0, column=2, sticky=tk.E)
+
+        # ── Connection controls ──────────────────────────────────────────────
+        conn_f = ttk.LabelFrame(f, text="Serial Connection", padding="6")
+        conn_f.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 6))
+
+        ttk.Label(conn_f, text="Port:").grid(row=0, column=0, padx=(0, 4), sticky=tk.W)
+        self.cli_port_var = tk.StringVar(value="Auto")
+        ports = ["Auto"] + self._scan_serial_ports()
+        self.cli_port_combo = ttk.Combobox(conn_f, textvariable=self.cli_port_var,
+                                           values=ports, state='readonly', width=18)
+        self.cli_port_combo.grid(row=0, column=1, padx=(0, 8))
+
+        ttk.Label(conn_f, text="Baud:").grid(row=0, column=2, padx=(0, 4), sticky=tk.W)
+        self.cli_baud_var = tk.StringVar(value="115200")
+        ttk.Combobox(conn_f, textvariable=self.cli_baud_var,
+                     values=["9600", "38400", "57600", "115200", "230400", "921600"],
+                     state='readonly', width=9).grid(row=0, column=3, padx=(0, 8))
+
+        self.cli_connect_btn = ttk.Button(conn_f, text="🔌 Connect", width=12,
+                                          command=self.cli_connect)
+        self.cli_connect_btn.grid(row=0, column=4, padx=(0, 4))
+        self.cli_disconnect_btn = ttk.Button(conn_f, text="⏏ Disconnect", width=12,
+                                             command=self.cli_disconnect, state='disabled')
+        self.cli_disconnect_btn.grid(row=0, column=5, padx=(0, 8))
+        ttk.Button(conn_f, text="🔄 Ports", width=9,
+                   command=self.refresh_serial_ports_combo).grid(row=0, column=6, padx=(0, 8))
+
+        ttk.Label(conn_f, text="Device type:").grid(row=0, column=7, padx=(8, 4), sticky=tk.W)
+        self.cli_device_type_var = tk.StringVar(value="repeater")
+        for col, (label, val) in enumerate([("Repeater", "repeater"),
+                                             ("Companion", "companion"),
+                                             ("Room Server", "room")], start=8):
+            ttk.Radiobutton(conn_f, text=label, variable=self.cli_device_type_var,
+                            value=val,
+                            command=self._cli_rebuild_quick_buttons).grid(
+                row=0, column=col, padx=4)
+
+        # ── Quick buttons panel (collapsible groups in a wrapping grid) ─────────
+        self.cli_quick_frame = ttk.LabelFrame(f, text="Quick Commands", padding="6")
+        self.cli_quick_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 6))
+        # track expanded state per group: {group_name: BooleanVar}
+        self._cli_group_expanded = {}
+        self._cli_rebuild_quick_buttons()
+
+        # ── Terminal output ──────────────────────────────────────────────────
+        term_f = ttk.Frame(f)
+        term_f.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        term_f.columnconfigure(0, weight=1)
+        term_f.rowconfigure(0, weight=1)
+
+        self.cli_output = tk.Text(term_f, font=('Courier', 9), wrap=tk.WORD,
+                                  bg='#1a1a2e', fg='#e0e0ff',
+                                  insertbackground='white', state='disabled')
+        self.cli_output.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        sb = ttk.Scrollbar(term_f, orient="vertical", command=self.cli_output.yview)
+        sb.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        self.cli_output['yscrollcommand'] = sb.set
+
+        # Colour tags
+        self.cli_output.tag_config('cmd',   foreground='#7ec8e3')   # sent commands
+        self.cli_output.tag_config('resp',  foreground='#e0e0ff')   # device responses
+        self.cli_output.tag_config('info',  foreground='#a0ffa0')   # app info messages
+        self.cli_output.tag_config('error', foreground='#ff7070')   # errors
+
+        # ── Input bar ───────────────────────────────────────────────────────
+        input_f = ttk.Frame(f)
+        input_f.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(6, 0))
+        input_f.columnconfigure(0, weight=1)
+
+        self.cli_input_var = tk.StringVar()
+        self.cli_input_entry = ttk.Entry(input_f, textvariable=self.cli_input_var,
+                                         font=('Courier', 10))
+        self.cli_input_entry.grid(row=0, column=0, sticky=(tk.W, tk.E), padx=(0, 6))
+        self.cli_input_entry.bind('<Return>',  self._cli_on_enter)
+        self.cli_input_entry.bind('<Up>',      self._cli_history_up)
+        self.cli_input_entry.bind('<Down>',    self._cli_history_down)
+
+        ttk.Button(input_f, text="Send ↵", width=10,
+                   command=self._cli_send_from_entry).grid(row=0, column=1, padx=(0, 4))
+        ttk.Button(input_f, text="🗑 Clear", width=9,
+                   command=self._cli_clear).grid(row=0, column=2)
+
+    def _cli_rebuild_quick_buttons(self):
+        """Destroy and rebuild quick-button groups for the current device type.
+
+        Each group is a collapsible row: a toggle button header + a button panel
+        that shows/hides. Groups are arranged GROUPS_PER_ROW across the frame.
+        """
+        for w in self.cli_quick_btn_widgets:
+            w.destroy()
+        self.cli_quick_btn_widgets.clear()
+
+        device_type = self.cli_device_type_var.get()
+        groups = self._CLI_COMMANDS.get(device_type, {})
+
+        BTNS_PER_ROW  = 4   # command buttons per row inside an expanded group
+        GROUPS_PER_ROW = 4  # group columns across the quick-commands frame
+
+        for gc, (group_name, cmds) in enumerate(groups.items()):
+            grow = gc // GROUPS_PER_ROW
+            gcol = gc %  GROUPS_PER_ROW
+
+            # Preserve expanded state across rebuilds (default: collapsed)
+            if group_name not in self._cli_group_expanded:
+                self._cli_group_expanded[group_name] = tk.BooleanVar(value=False)
+            expanded_var = self._cli_group_expanded[group_name]
+
+            # Outer container for this group
+            outer = ttk.Frame(self.cli_quick_frame)
+            outer.grid(row=grow, column=gcol, padx=(0, 8), pady=(0, 4),
+                       sticky=(tk.N, tk.W))
+            self.cli_quick_btn_widgets.append(outer)
+
+            # Inner panel that holds the command buttons (toggled show/hide)
+            btn_panel = ttk.Frame(outer, relief='groove', borderwidth=1, padding=3)
+
+            def _make_toggle(panel, var, header_btn, name):
+                def toggle():
+                    if var.get():
+                        panel.grid()
+                        header_btn.config(text=f"▾ {name}")
+                    else:
+                        panel.grid_remove()
+                        header_btn.config(text=f"▸ {name}")
+                return toggle
+
+            arrow = "▾" if expanded_var.get() else "▸"
+            header = ttk.Button(outer, text=f"{arrow} {group_name}",
+                                style='Toolbutton')
+            header.grid(row=0, column=0, sticky=(tk.W, tk.E))
+            self.cli_quick_btn_widgets.append(header)
+
+            toggle_fn = _make_toggle(btn_panel, expanded_var, header, group_name)
+
+            def _cmd_toggle(fn=toggle_fn, var=expanded_var):
+                var.set(not var.get())
+                fn()
+
+            header.config(command=_cmd_toggle)
+
+            # Command buttons inside the panel
+            for i, entry in enumerate(cmds):
+                label, cmd = entry[0], entry[1]
+                tip   = entry[2] if len(entry) > 2 else ""
+                r, c = divmod(i, BTNS_PER_ROW)
+                if cmd is None:
+                    b = ttk.Button(btn_panel, text=label,
+                                   command=lambda lbl=label: self._cli_prompt_command(lbl))
+                else:
+                    b = ttk.Button(btn_panel, text=label,
+                                   command=lambda c=cmd: self.cli_send_command(c))
+                b.grid(row=r, column=c, padx=2, pady=2, sticky=(tk.W, tk.E))
+                if tip:
+                    self._attach_tooltip(b, f"{cmd or label}\n\n{tip}")
+                self.cli_quick_btn_widgets.append(b)
+
+            btn_panel.grid(row=1, column=0, sticky=(tk.W, tk.E))
+            if not expanded_var.get():
+                btn_panel.grid_remove()
+
+    def cli_connect(self):
+        """Open serial connection to the selected port.
+
+        If the Serial Monitor is already holding the same port open, pause it
+        first so the CLI can take exclusive access.
+        """
+        import serial as _serial
+        port = self.cli_port_var.get()
+        baud = int(self.cli_baud_var.get())
+
+        if port == "Auto":
+            detected = self._scan_serial_ports()
+            if not detected:
+                self._cli_append("✗ No serial port detected. Connect a device and click Refresh Ports.\n", 'error')
+                return
+            port = detected[0]
+            self._cli_append(f"ℹ Auto-selected port: {port}\n", 'info')
+
+        # Pause the Serial Monitor if it holds this port so we can open it
+        sm_was_running = self.serial_monitor_running
+        sm_port = self.sm_port_var.get()
+        if sm_was_running and (sm_port == port or sm_port == "Auto"):
+            self._cli_append("ℹ Pausing Serial Monitor while CLI is connected...\n", 'info')
+            self._sm_shutting_down = True   # prevent auto-restart
+            self.stop_serial_monitor()
+            self._sm_shutting_down = False
+        else:
+            sm_was_running = False
+        self._cli_sm_was_running = sm_was_running  # remember so we can resume on disconnect
+
+        try:
+            self.cli_serial = _serial.Serial(port, baud, timeout=0.1)
+        except Exception as e:
+            self._cli_append(f"✗ Could not open {port}: {e}\n", 'error')
+            # Resume monitor if we paused it
+            if sm_was_running:
+                self.root.after(500, self.start_serial_monitor)
+            return
+
+        self.cli_running = True
+        self._cli_mode_active = False
+        self.cli_connect_btn.config(state='disabled')
+        self.cli_disconnect_btn.config(state='normal')
+        self.cli_status_var.set(f"Connected  {port} @ {baud}")
+        self._cli_append(f"✓ Connected to {port} at {baud} baud\n", 'info')
+        self._cli_append(
+            "ℹ To enter CLI mode: usually hold the BOOT button on the device, power on.\n"
+            "  You should see a '>' prompt appear when CLI mode is active.\n",
+            'info')
+
+        threading.Thread(target=self._cli_reader_thread, daemon=True).start()
+
+    def cli_disconnect(self):
+        """Close the serial connection and resume the Serial Monitor if it was paused."""
+        self.cli_running = False
+        self._cli_mode_active = False
+        self._cli_cancel_no_response_timer()
+        if self.cli_serial:
+            try:
+                self.cli_serial.close()
+            except Exception:
+                pass
+            self.cli_serial = None
+        self.cli_connect_btn.config(state='normal')
+        self.cli_disconnect_btn.config(state='disabled')
+        self.cli_status_var.set("Disconnected")
+        self._cli_append("⏏ Disconnected.\n", 'info')
+
+        # Resume Serial Monitor if we paused it
+        if getattr(self, '_cli_sm_was_running', False):
+            self._cli_sm_was_running = False
+            self._cli_append("ℹ Resuming Serial Monitor...\n", 'info')
+            self.root.after(500, self.start_serial_monitor)
+
+    def _cli_reader_thread(self):
+        """Background thread — reads lines from the serial port."""
+        buf = b""
+        while self.cli_running and self.cli_serial and self.cli_serial.is_open:
+            try:
+                chunk = self.cli_serial.read(256)
+                if chunk:
+                    buf += chunk
+                    # Flush complete lines
+                    while b'\n' in buf:
+                        line, buf = buf.split(b'\n', 1)
+                        text = line.decode('utf-8', errors='replace').rstrip('\r') + '\n'
+                        self.root.after(0, lambda t=text: self._cli_on_response(t))
+                    # Also handle bare '>' prompt (no newline)
+                    if buf.strip() == b'>':
+                        text = buf.decode('utf-8', errors='replace')
+                        buf = b""
+                        self.root.after(0, lambda t=text: self._cli_on_response(t))
+            except Exception:
+                break
+        self.root.after(0, self._cli_on_disconnected)
+
+    def _cli_on_disconnected(self):
+        """Called on main thread when the reader thread exits unexpectedly."""
+        if self.cli_running:   # wasn't a deliberate disconnect
+            self.cli_running = False
+            self._cli_mode_active = False
+            self._cli_cancel_no_response_timer()
+            self.cli_connect_btn.config(state='normal')
+            self.cli_disconnect_btn.config(state='disabled')
+            self.cli_status_var.set("Disconnected")
+            # Resume Serial Monitor if it was paused for us
+            if getattr(self, '_cli_sm_was_running', False):
+                self._cli_sm_was_running = False
+                self._cli_append("ℹ Resuming Serial Monitor...\n", 'info')
+                self.root.after(500, self.start_serial_monitor)
+            self._cli_append("⚠ Serial connection lost.\n", 'error')
+
+    def cli_send_command(self, cmd: str):
+        """Send a command string to the device over serial."""
+        if not self.cli_serial or not self.cli_serial.is_open:
+            self._cli_append("✗ Not connected. Click Connect first.\n", 'error')
+            return
+        try:
+            self.cli_serial.write((cmd + '\r\n').encode('utf-8'))
+            self._cli_append(f"> {cmd}\n", 'cmd')
+            # Add to history (avoid consecutive duplicates)
+            if not self.cli_cmd_history or self.cli_cmd_history[-1] != cmd:
+                self.cli_cmd_history.append(cmd)
+            self.cli_history_idx = len(self.cli_cmd_history)
+            # Start a no-response watchdog — cancelled if any data arrives
+            self._cli_cancel_no_response_timer()
+            self._cli_no_response_id = self.root.after(3000, self._cli_no_response_hint)
+        except Exception as e:
+            self._cli_append(f"✗ Send error: {e}\n", 'error')
+
+
+    def _cli_no_response_hint(self):
+        """Called when a command got no reply within 3 seconds."""
+        self._cli_no_response_id = None
+        if not self._cli_mode_active:
+            self._cli_append(
+                "⚠ No response received.\n"
+                "  The device may not be in CLI mode yet.\n"
+                "  → Usually hold the BOOT button on the device, power on.\n"
+                "  → Resend your command once you see the '>' prompt.\n"
+                "  If still no response, ensure no other tool is holding the serial port.\n",
+                'error')
+        else:
+            self._cli_append(
+                "⚠ No response received. The device may be busy or the command\n"
+                "  is not supported in this firmware version.\n",
+                'error')
+
+    def _cli_cancel_no_response_timer(self):
+        if self._cli_no_response_id is not None:
+            try:
+                self.root.after_cancel(self._cli_no_response_id)
+            except Exception:
+                pass
+            self._cli_no_response_id = None
+
+    def _cli_on_response(self, text: str):
+        """Called on the main thread whenever data arrives from the device."""
+        # Any incoming data cancels the no-response watchdog
+        self._cli_cancel_no_response_timer()
+        # Detect '>' prompt — CLI mode is confirmed active
+        if '>' in text and not self._cli_mode_active:
+            self._cli_mode_active = True
+            self.cli_status_var.set(
+                self.cli_status_var.get().replace("Connected", "CLI Active ✓"))
+            self._cli_append("✓ CLI prompt detected — device is in CLI mode.\n", 'info')
+        self._cli_append(text, 'resp')
+
+    def _cli_send_from_entry(self):
+        cmd = self.cli_input_var.get().strip()
+        if not cmd:
+            return
+        self.cli_input_var.set("")
+        self.cli_send_command(cmd)
+
+    def _cli_on_enter(self, event=None):
+        self._cli_send_from_entry()
+
+    def _cli_history_up(self, event=None):
+        if not self.cli_cmd_history:
+            return
+        self.cli_history_idx = max(0, self.cli_history_idx - 1)
+        self.cli_input_var.set(self.cli_cmd_history[self.cli_history_idx])
+        self.cli_input_entry.icursor(tk.END)
+
+    def _cli_history_down(self, event=None):
+        if not self.cli_cmd_history:
+            return
+        self.cli_history_idx = min(len(self.cli_cmd_history), self.cli_history_idx + 1)
+        if self.cli_history_idx == len(self.cli_cmd_history):
+            self.cli_input_var.set("")
+        else:
+            self.cli_input_var.set(self.cli_cmd_history[self.cli_history_idx])
+        self.cli_input_entry.icursor(tk.END)
+
+    def _cli_prompt_command(self, label: str):
+        """For commands that need a parameter — open a small input dialog."""
+        from tkinter import simpledialog
+        prompts = {
+            "guest pw": ("Set Guest Password", "set guest.password {password}", "Enter new guest password:"),
+        }
+        title, template, prompt_text = prompts.get(label, (label, label, f"Enter value for '{label}':"))
+        value = simpledialog.askstring(title, prompt_text, parent=self.root)
+        if value is None:
+            return
+        cmd = template.replace("{password}", value)
+        self.cli_send_command(cmd)
+
+    def _cli_append(self, text: str, tag: str = 'resp'):
+        """Append coloured text to the CLI terminal (must run on main thread)."""
+        self.cli_output.config(state='normal')
+        self.cli_output.insert(tk.END, text, tag)
+        self.cli_output.see(tk.END)
+        self.cli_output.config(state='disabled')
+
+    def _cli_clear(self):
+        self.cli_output.config(state='normal')
+        self.cli_output.delete('1.0', tk.END)
+        self.cli_output.config(state='disabled')
 
 
 def main():
