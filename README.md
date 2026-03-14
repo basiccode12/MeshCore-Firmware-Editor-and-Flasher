@@ -221,6 +221,11 @@ pip install tkinterweb QScintilla PyQt5
 - Check the correct port is selected and the device is connected
 - For CLI: usually hold **BOOT** on the device, power on to enter CLI mode — you should see a `>` prompt appear
 
+### Serial connection drops on Linux (USB autosuspend)
+- The app automatically disables USB autosuspend when connecting (Linux only) to prevent drops
+- If you don't see "Disabled USB autosuspend" in the log, writing to sysfs may require root — try: `sudo python3 meshcore_flasher.py`
+- Or disable autosuspend manually before running: `echo -1 | sudo tee /sys/bus/usb/devices/*/power/autosuspend`
+
 ### OTA WiFi won't connect
 - Ensure `nmcli` (NetworkManager) is available on Linux
 - Wait 10–15 seconds after `start ota` for the hotspot to appear

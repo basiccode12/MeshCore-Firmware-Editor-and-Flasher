@@ -20,6 +20,7 @@ import shutil
 import time
 import sys
 import configparser
+import re
 import http.server
 import socketserver
 import socket
@@ -425,16 +426,22 @@ class MeshCoreBLEFlasher:
         # Serial monitor state
         self.serial_monitor_process = None
         self.serial_monitor_running = False
+        self._sm_usb_autosuspend_path = None
+        self._sm_usb_autosuspend_old = None
         self.serial_monitor_after_id = None
         self._sm_shutting_down = False
 
         # MeshCore CLI tab state
         self.cli_serial = None
         self.cli_running = False
+        self._cli_usb_autosuspend_path = None
+        self._cli_usb_autosuspend_old = None
         self.cli_cmd_history = []
         self.cli_history_idx = -1
         self.cli_quick_btn_widgets = []  # keep refs so we can destroy/rebuild
         self._cli_mode_active = False    # True once we see a '>' prompt
+        self._cli_pending_get = None      # "radio" or "name" when waiting to parse response
+        self._cli_pending_get_buf = []    # accumulate response lines for parsing
         self._cli_no_response_id = None  # after() id for no-response hint timer
 
         self.setup_ui()
@@ -5872,6 +5879,47 @@ class MeshCoreBLEFlasher:
             if current not in values:
                 self.cli_port_var.set("Auto")
 
+    def _linux_disable_usb_autosuspend(self, port: str):
+        """On Linux, disable USB autosuspend for the device behind the serial port.
+        Returns (autosuspend_path, old_value) if successful, else (None, None).
+        Call _linux_restore_usb_autosuspend with the result when disconnecting.
+        """
+        if not sys.platform.startswith('linux'):
+            return None, None
+        basename = os.path.basename(port)
+        if not (basename.startswith('ttyUSB') or basename.startswith('ttyACM')):
+            return None, None
+        device_path = f'/sys/class/tty/{basename}/device'
+        if not os.path.exists(device_path):
+            return None, None
+        path = os.path.realpath(device_path)
+        while path and path != '/':
+            autosuspend = os.path.join(path, 'power', 'autosuspend')
+            if os.path.exists(autosuspend):
+                try:
+                    with open(autosuspend, 'r') as f:
+                        old = f.read().strip()
+                    with open(autosuspend, 'w') as f:
+                        f.write('-1')
+                    return autosuspend, old
+                except PermissionError:
+                    # Writing to sysfs usually requires root; user can run with sudo or add udev rules
+                    return None, None
+                except (OSError, IOError):
+                    return None, None
+            path = os.path.dirname(path)
+        return None, None
+
+    def _linux_restore_usb_autosuspend(self, autosuspend_path: str, old_value: str):
+        """Restore the previous USB autosuspend value when disconnecting."""
+        if not autosuspend_path or old_value is None or not sys.platform.startswith('linux'):
+            return
+        try:
+            with open(autosuspend_path, 'w') as f:
+                f.write(old_value)
+        except (OSError, IOError):
+            pass
+
     def _scan_serial_ports(self):
         """Return a list of available serial port names."""
         ports = []
@@ -5922,9 +5970,17 @@ class MeshCoreBLEFlasher:
 
         self._sm_append(f"\n▶ Opening {port} at {baud} baud...\n")
 
+        # On Linux, disable USB autosuspend to prevent connection drops
+        self._sm_usb_autosuspend_path, self._sm_usb_autosuspend_old = self._linux_disable_usb_autosuspend(port)
+        if self._sm_usb_autosuspend_path:
+            self._sm_append("ℹ Disabled USB autosuspend (Linux) to prevent connection drops.\n")
+
         try:
             self.serial_monitor_process = _serial.Serial(port, baud, timeout=0.1)
         except Exception as e:
+            self._linux_restore_usb_autosuspend(self._sm_usb_autosuspend_path, self._sm_usb_autosuspend_old)
+            self._sm_usb_autosuspend_path = None
+            self._sm_usb_autosuspend_old = None
             self._sm_append(f"✗ Could not open {port}: {e}\n")
             return
 
@@ -5955,6 +6011,11 @@ class MeshCoreBLEFlasher:
     def _sm_on_stopped(self):
         """Called when the reader thread exits — auto-restart after a short delay."""
         self.serial_monitor_running = False
+        self._linux_restore_usb_autosuspend(
+            getattr(self, '_sm_usb_autosuspend_path', None),
+            getattr(self, '_sm_usb_autosuspend_old', None))
+        self._sm_usb_autosuspend_path = None
+        self._sm_usb_autosuspend_old = None
         if self._sm_shutting_down:
             return
         self.sm_status_var.set("Reconnecting…")
@@ -5974,6 +6035,11 @@ class MeshCoreBLEFlasher:
     def stop_serial_monitor(self):
         """Close the serial port and stop the monitor (without auto-restart)."""
         self.serial_monitor_running = False
+        self._linux_restore_usb_autosuspend(
+            getattr(self, '_sm_usb_autosuspend_path', None),
+            getattr(self, '_sm_usb_autosuspend_old', None))
+        self._sm_usb_autosuspend_path = None
+        self._sm_usb_autosuspend_old = None
         if self.serial_monitor_process:
             try:
                 self.serial_monitor_process.close()
@@ -6283,7 +6349,7 @@ class MeshCoreBLEFlasher:
         """Build the MeshCore CLI tab."""
         f = self.cli_tab
         f.columnconfigure(0, weight=1)
-        f.rowconfigure(3, weight=1)   # terminal expands
+        f.rowconfigure(4, weight=1)   # terminal expands
 
         # ── Title row ───────────────────────────────────────────────────────
         title_f = ttk.Frame(f)
@@ -6331,16 +6397,45 @@ class MeshCoreBLEFlasher:
                             command=self._cli_rebuild_quick_buttons).grid(
                 row=0, column=col, padx=4)
 
+        # ── Set Radio panel ───────────────────────────────────────────────────
+        radio_f = ttk.LabelFrame(f, text="Set Radio", padding="6")
+        radio_f.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 6))
+        radio_f.columnconfigure(1, weight=1)
+        ttk.Label(radio_f, text="Freq (MHz):").grid(row=0, column=0, padx=(0, 4), sticky=tk.W)
+        self.cli_set_radio_freq_var = tk.StringVar(value="915.8")
+        ttk.Entry(radio_f, textvariable=self.cli_set_radio_freq_var, width=8).grid(row=0, column=1, padx=(0, 8), sticky=tk.W)
+        ttk.Label(radio_f, text="BW (kHz):").grid(row=0, column=2, padx=(8, 4), sticky=tk.W)
+        self.cli_set_radio_bw_var = tk.StringVar(value="125")
+        ttk.Entry(radio_f, textvariable=self.cli_set_radio_bw_var, width=6).grid(row=0, column=3, padx=(0, 8), sticky=tk.W)
+        ttk.Label(radio_f, text="SF:").grid(row=0, column=4, padx=(0, 4), sticky=tk.W)
+        self.cli_set_radio_sf_var = tk.StringVar(value="11")
+        ttk.Entry(radio_f, textvariable=self.cli_set_radio_sf_var, width=4).grid(row=0, column=5, padx=(0, 8), sticky=tk.W)
+        ttk.Label(radio_f, text="CR:").grid(row=0, column=6, padx=(0, 4), sticky=tk.W)
+        self.cli_set_radio_cr_var = tk.StringVar(value="5")
+        ttk.Entry(radio_f, textvariable=self.cli_set_radio_cr_var, width=4).grid(row=0, column=7, padx=(0, 8), sticky=tk.W)
+        ttk.Button(radio_f, text="Get Radio", width=10,
+                   command=self._cli_get_radio).grid(row=0, column=8, padx=(8, 4))
+        ttk.Button(radio_f, text="Set Radio", width=10,
+                   command=self._cli_set_radio).grid(row=0, column=9, padx=(0, 0))
+
+        ttk.Label(radio_f, text="Name:").grid(row=1, column=0, padx=(0, 4), pady=(6, 0), sticky=tk.W)
+        self.cli_set_name_var = tk.StringVar(value="")
+        ttk.Entry(radio_f, textvariable=self.cli_set_name_var, width=24).grid(row=1, column=1, columnspan=7, padx=(0, 8), pady=(6, 0), sticky=(tk.W, tk.E))
+        ttk.Button(radio_f, text="Get Name", width=10,
+                   command=self._cli_get_name).grid(row=1, column=8, padx=(8, 4), pady=(6, 0))
+        ttk.Button(radio_f, text="Set Name", width=10,
+                   command=self._cli_set_name).grid(row=1, column=9, padx=(0, 0), pady=(6, 0))
+
         # ── Quick buttons panel (collapsible groups in a wrapping grid) ─────────
         self.cli_quick_frame = ttk.LabelFrame(f, text="Quick Commands", padding="6")
-        self.cli_quick_frame.grid(row=2, column=0, sticky=(tk.W, tk.E), pady=(0, 6))
+        self.cli_quick_frame.grid(row=3, column=0, sticky=(tk.W, tk.E), pady=(0, 6))
         # track expanded state per group: {group_name: BooleanVar}
         self._cli_group_expanded = {}
         self._cli_rebuild_quick_buttons()
 
         # ── Terminal output ──────────────────────────────────────────────────
         term_f = ttk.Frame(f)
-        term_f.grid(row=3, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        term_f.grid(row=4, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         term_f.columnconfigure(0, weight=1)
         term_f.rowconfigure(0, weight=1)
 
@@ -6360,7 +6455,7 @@ class MeshCoreBLEFlasher:
 
         # ── Input bar ───────────────────────────────────────────────────────
         input_f = ttk.Frame(f)
-        input_f.grid(row=4, column=0, sticky=(tk.W, tk.E), pady=(6, 0))
+        input_f.grid(row=5, column=0, sticky=(tk.W, tk.E), pady=(6, 0))
         input_f.columnconfigure(0, weight=1)
 
         self.cli_input_var = tk.StringVar()
@@ -6375,6 +6470,33 @@ class MeshCoreBLEFlasher:
                    command=self._cli_send_from_entry).grid(row=0, column=1, padx=(0, 4))
         ttk.Button(input_f, text="🗑 Clear", width=9,
                    command=self._cli_clear).grid(row=0, column=2)
+
+    def _cli_get_radio(self):
+        """Send get radio and set _cli_pending_get so response populates the form fields."""
+        self._cli_pending_get = "radio"
+        self._cli_pending_get_buf = []
+        self.cli_send_command("get radio")
+
+    def _cli_get_name(self):
+        """Send get name and set _cli_pending_get so response populates the form fields."""
+        self._cli_pending_get = "name"
+        self._cli_pending_get_buf = []
+        self.cli_send_command("get name")
+
+    def _cli_set_radio(self):
+        """Send 'set radio freq,bw,sf,cr' with the current form values."""
+        freq = self.cli_set_radio_freq_var.get().strip()
+        bw = self.cli_set_radio_bw_var.get().strip()
+        sf = self.cli_set_radio_sf_var.get().strip()
+        cr = self.cli_set_radio_cr_var.get().strip()
+        if freq and bw and sf and cr:
+            self.cli_send_command(f"set radio {freq},{bw},{sf},{cr}")
+
+    def _cli_set_name(self):
+        """Send 'set name {name}' — sets the advertisement name broadcast by the device."""
+        name = self.cli_set_name_var.get().strip()
+        if name:
+            self.cli_send_command(f"set name {name}")
 
     def _cli_rebuild_quick_buttons(self):
         """Destroy and rebuild quick-button groups for the current device type.
@@ -6484,9 +6606,17 @@ class MeshCoreBLEFlasher:
             sm_was_running = False
         self._cli_sm_was_running = sm_was_running  # remember so we can resume on disconnect
 
+        # On Linux, disable USB autosuspend to prevent connection drops
+        self._cli_usb_autosuspend_path, self._cli_usb_autosuspend_old = self._linux_disable_usb_autosuspend(port)
+        if self._cli_usb_autosuspend_path:
+            self._cli_append("ℹ Disabled USB autosuspend (Linux) to prevent connection drops.\n", 'info')
+
         try:
             self.cli_serial = _serial.Serial(port, baud, timeout=0.1)
         except Exception as e:
+            self._linux_restore_usb_autosuspend(self._cli_usb_autosuspend_path, self._cli_usb_autosuspend_old)
+            self._cli_usb_autosuspend_path = None
+            self._cli_usb_autosuspend_old = None
             self._cli_append(f"✗ Could not open {port}: {e}\n", 'error')
             # Resume monitor if we paused it
             if sm_was_running:
@@ -6510,7 +6640,14 @@ class MeshCoreBLEFlasher:
         """Close the serial connection and resume the Serial Monitor if it was paused."""
         self.cli_running = False
         self._cli_mode_active = False
+        self._cli_pending_get = None
+        self._cli_pending_get_buf = []
         self._cli_cancel_no_response_timer()
+        self._linux_restore_usb_autosuspend(
+            getattr(self, '_cli_usb_autosuspend_path', None),
+            getattr(self, '_cli_usb_autosuspend_old', None))
+        self._cli_usb_autosuspend_path = None
+        self._cli_usb_autosuspend_old = None
         if self.cli_serial:
             try:
                 self.cli_serial.close()
@@ -6552,9 +6689,16 @@ class MeshCoreBLEFlasher:
 
     def _cli_on_disconnected(self):
         """Called on main thread when the reader thread exits unexpectedly."""
+        self._linux_restore_usb_autosuspend(
+            getattr(self, '_cli_usb_autosuspend_path', None),
+            getattr(self, '_cli_usb_autosuspend_old', None))
+        self._cli_usb_autosuspend_path = None
+        self._cli_usb_autosuspend_old = None
         if self.cli_running:   # wasn't a deliberate disconnect
             self.cli_running = False
             self._cli_mode_active = False
+            self._cli_pending_get = None
+            self._cli_pending_get_buf = []
             self._cli_cancel_no_response_timer()
             self.cli_connect_btn.config(state='normal')
             self.cli_disconnect_btn.config(state='disabled')
@@ -6594,12 +6738,15 @@ class MeshCoreBLEFlasher:
                 "  The device may not be in CLI mode yet.\n"
                 "  → Usually hold the BOOT button on the device, power on.\n"
                 "  → Resend your command once you see the '>' prompt.\n"
+                "  → The device may have gone into powersaving mode — reset it, run\n"
+                "    'powersaving off', then turn powersaving back on before disconnecting if needed.\n"
                 "  If still no response, ensure no other tool is holding the serial port.\n",
                 'error')
         else:
             self._cli_append(
-                "⚠ No response received. The device may be busy or the command\n"
-                "  is not supported in this firmware version.\n",
+                "⚠ No response received. The device may be busy, the command may not be\n"
+                "  supported, or it may have gone into powersaving mode — reset the device,\n"
+                "  run 'powersaving off', then turn powersaving back on before disconnecting if needed.\n",
                 'error')
 
     def _cli_cancel_no_response_timer(self):
@@ -6614,6 +6761,39 @@ class MeshCoreBLEFlasher:
         """Called on the main thread whenever data arrives from the device."""
         # Any incoming data cancels the no-response watchdog
         self._cli_cancel_no_response_timer()
+        # Parse pending get responses and update form fields
+        if self._cli_pending_get:
+            line = text.strip()
+            self._cli_pending_get_buf.append(line)
+            if self._cli_pending_get == "radio":
+                # Match freq,bw,sf,cr: comma-separated, space-separated, or 4 numbers in buf
+                for ln in self._cli_pending_get_buf:
+                    m = re.search(r'([\d.]+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)', ln)
+                    if not m:
+                        m = re.search(r'([\d.]+)\s+(\d+)\s+(\d+)\s+(\d+)', ln)
+                    if m:
+                        self.cli_set_radio_freq_var.set(m.group(1))
+                        self.cli_set_radio_bw_var.set(m.group(2))
+                        self.cli_set_radio_sf_var.set(m.group(3))
+                        self.cli_set_radio_cr_var.set(m.group(4))
+                        self._cli_pending_get = None
+                        self._cli_pending_get_buf = []
+                        break
+            elif self._cli_pending_get == "name":
+                # Name: first non-empty line that's not a prompt or command echo
+                for ln in self._cli_pending_get_buf:
+                    skip = not ln or ln in (">", "> ") or ln.startswith("get name") or ln == "get name"
+                    if not skip:
+                        name = ln.lstrip("-> ").lstrip("> ").strip()
+                        if name and not re.match(r'^[\d.,\s]+$', name):
+                            self.cli_set_name_var.set(name)
+                            self._cli_pending_get = None
+                            self._cli_pending_get_buf = []
+                            break
+            # Clear when we see the prompt (response complete)
+            if line in ('>', '> ') or (len(line) == 1 and line == '>'):
+                self._cli_pending_get = None
+                self._cli_pending_get_buf = []
         # Detect '>' prompt — CLI mode is confirmed active
         if '>' in text and not self._cli_mode_active:
             self._cli_mode_active = True
